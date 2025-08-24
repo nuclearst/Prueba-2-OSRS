@@ -9,3 +9,4 @@
 {%- assign feet = page_feet | concat: layout_feet -%}
 {% for f in feet %}{% include {{ f }} %}
 {% endfor %}
+{%- endif -%}
