@@ -1,12 +1,6 @@
 {%- if site.data.theme.icons -%}{% assign icons = site.data.theme.icons %}{% else %}
 {% assign cb_icons = site.pages | where: "name","cb-icons.svg" | first %}
 {% assign icons = cb_icons.icons %}{%- endif -%}
-{% if site.data.theme.map-child-objects == true %}
-{%- assign items = site.data[site.metadata] | where_exp: 'item','item.objectid' -%}
-{% else %}
-{%- assign items = site.data[site.metadata] | where_exp: 'item','item.objectid' | where_exp: 'item','item.parentid == nil' -%}
-{% endif %}
-{%- assign items = items | where_exp: 'item', 'item.objectid != nil' | where_exp: 'item','item.latitude' -%}
 {%- assign fields = site.data.config-map -%}
 <!-- Leaflet -->
 <script src="{{ '/assets/lib/leaflet/leaflet.js' | relative_url }}"></script>
@@ -18,82 +12,101 @@
 
 <script>
 (function(){
-  /* Build map data (GeoJSON-like) from metadata */
-  var geodata = { "type": "FeatureCollection", "features": [
-    {% for item in items %}
-    { "type":"Feature",
-      "geometry":{ "type":"Point", "coordinates":[ {{ item.longitude | strip }}, {{ item.latitude | strip }} ] },
-      "properties":{
-        "title": {{ item.title | jsonify }},
-        {% for f in fields %}{{ f.field | jsonify }}: {{ item[f.field] | jsonify }},{% endfor %}
-        "id": {{ item.objectid | jsonify }},
-        "creator": {{ item.creator | jsonify }},
-        "location": {{ item.location | jsonify }},
-        "date": {{ item.date | jsonify }},
-        {% if item.youtubeid %}"youtube": {{ item.youtubeid | jsonify }}, {% endif %}
-        "format": {{ item.format | jsonify }},
-        {% if item.filename %}"image": "{{ '/objects/' | relative_url | append: item.filename }}", {% endif %}
-        {% if item.vimeoid %}"vimeo": {{ item.vimeoid | jsonify }}, {% endif %}
-        "link": {{ item.objectid | jsonify }}
-      }
-    }{% unless forloop.last %}, {% endunless %}
-    {% endfor %}
-  ]};
+  /* 1) Traer TODOS los registros del CSV tal cual, sin filtrar en Liquid */
+  var RAW = {{ site.data[site.metadata] | jsonify }};
 
-  /* URL params (?location=lat,lng & ?marker=id) */
+  /* 2) Utilidades */
+  function toNum(v){
+    if (v===null || v===undefined) return NaN;
+    var s = String(v).trim().replace(',', '.');  // acepta 44,5
+    var n = parseFloat(s);
+    return isNaN(n) ? NaN : n;
+  }
+  function toImageLatLngFactory(w, h){
+    return function toImageLatLng(lat, lng){
+      if (lat==null || lng==null) return null;
+      var aLat = Math.abs(lat), aLng = Math.abs(lng);
+      var y = lat, x = lng;
+      if (aLat <= 1 && aLng <= 1){               // fracción (0..1)
+        y = Math.min(lat, 0.9999) * h;
+        x = Math.min(lng, 0.9999) * w;
+      } else if (aLat <= 100 && aLng <= 100){    // porcentaje (0..100)
+        y = (Math.min(lat, 99.9999) / 100) * h;
+        x = (Math.min(lng, 99.9999) / 100) * w;
+      } // si no: píxeles
+      y = Math.max(0, Math.min(h-1, y));
+      x = Math.max(0, Math.min(w-1, x));
+      return L.latLng(y, x);
+    };
+  }
+
+  /* 3) URL params (?location=lat,lng & ?marker=id) */
   let url = new URL(window.location);
   var locationParam = url.searchParams.get('location');
   var markerFilter  = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
 
-  /* Init map in image CRS */
-  var map = L.map('map', {
-    crs: L.CRS.Simple,
-    zoomControl: true,
-    fullscreenControl: true
-  });
-
-  /* OSRS world image as basemap */
+  /* 4) Crear mapa CRS.Simple sobre imagen OSRS */
+  var map = L.map('map', { crs: L.CRS.Simple, zoomControl: true, fullscreenControl: true });
   var imgUrl = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
   var img = new Image();
   img.onload = function() {
     var w = img.naturalWidth || img.width;
     var h = img.naturalHeight || img.height;
-    var imageBounds = [[0,0], [h, w]]; // top-left to bottom-right
-
+    var imageBounds = [[0,0], [h, w]];
     L.imageOverlay(imgUrl, imageBounds).addTo(map);
     map.setMaxBounds(imageBounds);
     map.fitBounds(imageBounds);
 
     {% if site.data.theme.map-cluster == true %}
-    /* Punto verde como el modelo base */
     var markers = L.markerClusterGroup({
-      maxClusterRadius: 40,
+      maxClusterRadius: {{ site.data.theme.map-cluster-radius | default: 25 }},
       singleMarkerMode: true,
       spiderfyOnMaxZoom: true
     });
     {% endif %}
 
-    /* Heurística coord: fracción / % / píxeles + clamp en bordes */
-    function toImageLatLng(lat, lng) {
-      if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) return null;
-      var y = lat, x = lng;
-      var aLat = Math.abs(lat), aLng = Math.abs(lng);
-      if ((aLat <= 1 && aLng <= 1)) { y = Math.min(lat, 0.9999) * h; x = Math.min(lng, 0.9999) * w; }
-      else if ((aLat <= 100 && aLng <= 100)) { y = (Math.min(lat, 99.9999) / 100.0) * h; x = (Math.min(lng, 99.9999) / 100.0) * w; }
-      y = Math.max(0, Math.min(h - 1, y));
-      x = Math.max(0, Math.min(w - 1, x));
-      return L.latLng(y, x);
-    }
+    var toImageLatLng = toImageLatLngFactory(w, h);
 
-    /* Popup */
+    /* 5) Convertir RAW -> GeoJSON aquí (robusto) */
+    var features = [];
+    for (var i=0; i<RAW.length; i++){
+      var r = RAW[i];
+      var lat = toNum(r.latitude);
+      var lng = toNum(r.longitude);
+      if (isNaN(lat) || isNaN(lng)) continue; // descarta sin coords
+
+      features.push({
+        "type":"Feature",
+        "geometry":{"type":"Point","coordinates":[ lng, lat ]}, // [x,y] = [lng,lat]
+        "properties":{
+          "title": r.title || "",
+          {% comment %} campos configurables {% endcomment %}
+          {% for f in fields %}{{ f.field | jsonify }}: {{ f.field | jsonify | replace:'"','' | prepend:'r.' | jsonify | replace:'"','' }},{% endfor %}
+          "id": r.objectid || "",
+          "creator": r.creator || "",
+          "location": r.location || "",
+          "date": r.date || "",
+          "youtube": r.youtubeid || "",
+          "vimeo": r.vimeoid || "",
+          "format": r.format || "",
+          "image": r.filename ? "{{ '/objects/' | relative_url }}" + r.filename : "",
+          "link": r.objectid || ""
+        }
+      });
+    }
+    var geodata = { "type":"FeatureCollection", "features": features };
+    // console.debug("features:", geodata.features.length, geodata.features.map(f=>f.properties.id));
+
+    /* 6) Popup con vista previa */
     function objectPopups(feature, layer) {
       feature.layer = layer;
       var itemHref = '{{ "/item.html" | relative_url }}?id=' + feature.properties.link;
 
+      var fmt = (feature.properties.format || "").toString().toLowerCase();
       var thumbSrc;
       if (feature.properties.youtube) {
         thumbSrc = 'https://img.youtube.com/vi/' +  feature.properties.youtube + '/default.jpg';
-      } else if (feature.properties.format && feature.properties.format.includes("image")) {
+      } else if (fmt.includes("image") || fmt.includes("jpg") || fmt.includes("png") || fmt.includes("gif")) {
         thumbSrc = feature.properties.image ? feature.properties.image : '{{ "/assets/img/default.png" | relative_url }}';
       } else {
         thumbSrc = '{{ "/assets/img/default.png" | relative_url }}';
@@ -117,12 +130,11 @@
       layer.bindPopup(popupText);
     }
 
-    /* Marcadores: cluster (punto verde) o circleMarker verde */
+    /* 7) Marcadores */
     function objectMarkers(feature/*, latlngIgnored*/) {
       var coords = feature.geometry && feature.geometry.coordinates ? feature.geometry.coordinates : null;
       var ll = coords ? toImageLatLng(coords[1], coords[0]) : null;
       if (!ll) return null;
-
       {% if site.data.theme.map-cluster == true %}
       var marker = L.marker(ll, { alt: feature.properties.title });
       markers.addLayer(marker);
@@ -132,30 +144,23 @@
       {% endif %}
     }
 
-    /* Cargar features */
+    /* 8) Cargar features */
     var mapFeatures = L.geoJson(geodata, {
       onEachFeature: objectPopups,
-      pointToLayer: objectMarkers,
-      filter: function(feature) {
-        return feature && feature.geometry && feature.geometry.coordinates &&
-               feature.geometry.coordinates.length === 2 &&
-               !isNaN(feature.geometry.coordinates[0]) && !isNaN(feature.geometry.coordinates[1]);
-      }
+      pointToLayer: objectMarkers
     }){% if site.data.theme.map-cluster != true %}.addTo(map);{% else %};
     map.addLayer(markers);{% endif %}
 
-    /* Centrar con ?location=lat,lng (igual al base) */
+    /* 9) Centrar con ?location=lat,lng */
     if (locationParam) {
-      var parts = locationParam.split(',');
-      if (parts.length === 2) {
-        var lat = parseFloat(parts[0]);
-        var lng = parseFloat(parts[1]);
-        var ll  = toImageLatLng(lat, lng);
-        if (ll) { map.setView(ll, Math.max(map.getZoom()+1, 1), { animate: true }); }
+      var p = locationParam.split(',');
+      if (p.length === 2) {
+        var ll = toImageLatLng(toNum(p[0]), toNum(p[1]));
+        if (ll) map.setView(ll, Math.max(map.getZoom()+1, 1), { animate: true });
       }
     }
 
-    /* Abrir popup si ?marker=ID */
+    /* 10) Abrir popup si ?marker=ID */
     if (markerFilter != "") {
       {% if site.data.theme.map-cluster == true %}
       markers.eachLayer(layer => {
