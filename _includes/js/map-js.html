@@ -18,175 +18,196 @@
 
 <script>
 (function(){
-    /* assemble GeoJSON-like data from metadata */
-    var geodata = { "type": "FeatureCollection", "features": [ 
+  /* Build map data (GeoJSON-like) from Jekyll metadata */
+  var geodata = { "type": "FeatureCollection", "features": [
     {% for item in items %}
-    { "type":"Feature", "geometry":{ "type":"Point", "coordinates":[ {{ item.longitude | strip }},{{ item.latitude | strip }} ] }, "properties":
-      { "title": {{ item.title | jsonify }}, 
-        {% for f in fields %}{{ f.field | jsonify }}: {{ item[f.field] | jsonify }}, {% endfor %}
-        "id": {{ item.objectid | jsonify }}, "creator": {{ item.creator | jsonify }}, "location": {{ item.location | jsonify }}, "date": {{ item.date | jsonify }},
-        {% if item.youtubeid %} "youtube": {{ item.youtubeid | jsonify }}, {% endif %}
-        "format": {{ item.format | jsonify }}, {% if  item.filename %} "image": "{{ '/objects/thumbs/' | relative_url | append: item.filename }}", {% endif %}
-        {% if  item.vimeoid %} "vimeo": {{ item.vimeoid | jsonify }}, {% endif %}
+    { "type":"Feature",
+      "geometry":{ "type":"Point", "coordinates":[ {{ item.longitude | strip }}, {{ item.latitude | strip }} ] },
+      "properties":{
+        "title": {{ item.title | jsonify }},
+        {% for f in fields %}{{ f.field | jsonify }}: {{ item[f.field] | jsonify }},{% endfor %}
+        "id": {{ item.objectid | jsonify }},
+        "creator": {{ item.creator | jsonify }},
+        "location": {{ item.location | jsonify }},
+        "date": {{ item.date | jsonify }},
+        {% if item.youtubeid %}"youtube": {{ item.youtubeid | jsonify }}, {% endif %}
+        "format": {{ item.format | jsonify }},
+        {% if item.filename %}"image": "{{ '/objects/thumbs/' | relative_url | append: item.filename }}", {% endif %}
+        {% if item.vimeoid %}"vimeo": {{ item.vimeoid | jsonify }}, {% endif %}
         "link": {{ item.objectid | jsonify }}
-      } }{% unless forloop.last %}, {% endunless %}{% endfor %}
-    ]};
+      }
+    }{% unless forloop.last %}, {% endunless %}
+    {% endfor %}
+  ]};
 
-    /* URL params for focusing on a marker */
-    let url = new URL(window.location);
-    var markerFilter = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
+  /* URL param to open a specific marker (?marker=objectid) */
+  let url = new URL(window.location);
+  var markerFilter = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
 
-    /* Create the map with a simple CRS for image coordinates */
-    var map = L.map('map', {
-        crs: L.CRS.Simple,
-        zoomControl: true,
-        fullscreenControl: true
+  /* Init Leaflet map in image (simple) CRS */
+  var map = L.map('map', {
+    crs: L.CRS.Simple,
+    zoomControl: true,
+    fullscreenControl: true
+  });
+
+  /* Use OSRS world image as the "basemap" */
+  var imgUrl = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
+  var img = new Image();
+  img.onload = function() {
+    var w = img.naturalWidth || img.width;
+    var h = img.naturalHeight || img.height;
+    var imageBounds = [[0,0], [h, w]]; // top-left to bottom-right in simple CRS
+
+    /* Add image overlay and set view/limits */
+    var imageLayer = L.imageOverlay(imgUrl, imageBounds).addTo(map);
+    map.setMaxBounds(imageBounds);
+    map.fitBounds(imageBounds);
+
+    {% if site.data.theme.map-cluster == true %}
+    var markers = L.markerClusterGroup({ maxClusterRadius: 40 });
+    {% endif %}
+
+    /* Helper: convert metadata (latitude, longitude) -> image coords (y, x)
+       PARCHE: clamp para que 1 (fracción) y 100% (porcentaje) no caigan fuera del borde */
+    function toImageLatLng(lat, lng) {
+      if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) return null;
+
+      var y = lat;
+      var x = lng;
+
+      /* Heurística:
+         - Si valores están entre 0 y 1 => fracciones del tamaño de la imagen.
+         - Si están entre -1 y 1 => también fracciones.
+         - Si están entre 0 y 100 (o -100..100) => porcentajes.
+         - En otro caso => píxeles (x=longitude, y=latitude).
+      */
+      var aLat = Math.abs(lat);
+      var aLng = Math.abs(lng);
+      if ((aLat <= 1 && aLng <= 1)) {
+        // Fracciones: 1 => 0.9999 para quedar dentro del borde
+        y = Math.min(lat, 0.9999) * h;
+        x = Math.min(lng, 0.9999) * w;
+      } else if ((aLat <= 100 && aLng <= 100)) {
+        // Porcentajes: 100% => 99.9999% para quedar dentro del borde
+        y = (Math.min(lat, 99.9999) / 100.0) * h;
+        x = (Math.min(lng, 99.9999) / 100.0) * w;
+      } // si no, interpretamos como píxeles
+
+      // Asegura estar dentro del lienzo de la imagen
+      y = Math.max(0, Math.min(h - 1, y));
+      x = Math.max(0, Math.min(w - 1, x));
+
+      return L.latLng(y, x);
+    }
+
+    /* Popups por objeto */
+    function objectPopups(feature, layer) {
+      /* bind para búsqueda (si existe) */
+      feature.layer = layer;
+
+      var itemHref = '{{ "/item.html" | relative_url }}?id=' + feature.properties.link;
+
+      /* miniatura */
+      var thumbSrc;
+      if (feature.properties.youtube) {
+        thumbSrc = 'https://img.youtube.com/vi/' +  feature.properties.youtube + '/default.jpg';
+      } else if (feature.properties.format && feature.properties.format.includes("image")) {
+        thumbSrc = feature.properties.image ? feature.properties.image : '{{ "/assets/img/default.png" | relative_url }}';
+      } else {
+        thumbSrc = '{{ "/assets/img/default.png" | relative_url }}';
+      }
+
+      /* metadatos para popup (según config-map.csv: label + popup=true) */
+      var metaData = '<ul class="list-unstyled">';
+      {% for f in fields %}
+      {% if f.popup == 'true' %}
+      metaData = metaData + '<li><strong>{{ f.label }}:</strong> ' + (feature.properties[{{ f.field | jsonify }}] || '') + '</li>';
+      {% endif %}
+      {% endfor %}
+      metaData = metaData + '</ul>';
+
+      var popupText = `<div class="card map-popup h-100 border border-light-subtle rounded-1 overflow-hidden">
+          <img class="card-img-top" src="${thumbSrc}" alt="">
+          <div class="card-body">
+            <h3 class="h5 card-title"><a href="${itemHref}">${feature.properties.title || '(sin título)'}</a></h3>
+            ${metaData}
+          </div>
+        </div>`;
+      layer.bindPopup(popupText);
+    }
+
+    /* Marcadores en coordenadas de imagen */
+    function objectMarkers(feature/*, latlngIgnored*/) {
+      var coords = feature.geometry && feature.geometry.coordinates ? feature.geometry.coordinates : null;
+      var ll = coords ? toImageLatLng(coords[1], coords[0]) : null; // coords = [lng, lat]
+      if (!ll) return null;
+      var marker = L.marker(ll, { alt: feature.properties.title });
+      {% if site.data.theme.map-cluster == true %}markers.addLayer(marker);{% endif %}
+      return marker;
+    }
+
+    /* Cargar features */
+    var mapFeatures = L.geoJson(geodata, {
+      onEachFeature: objectPopups,
+      pointToLayer: objectMarkers,
+      filter: function(feature) {
+        return feature && feature.geometry && feature.geometry.coordinates &&
+               feature.geometry.coordinates.length === 2 &&
+               !isNaN(feature.geometry.coordinates[0]) && !isNaN(feature.geometry.coordinates[1]);
+      }
+    }){% if site.data.theme.map-cluster != true %}.addTo(map);{% else %};
+    map.addLayer(markers);{% endif %}
+
+    {% if site.data.theme.map-search == true %}
+    /* Búsqueda con Fuse (si está activada en el tema) */
+    var options = {
+      title: 'Buscar objetos del mapa',
+      placeholder: 'Buscar...',
+      threshold: 0.35,
+      showInvisibleFeatures: true,
+      position: 'topleft'
+    };
+    var fuseSearchCtrl = L.control.fuseSearch(options);
+    map.addControl(fuseSearchCtrl);
+    var props = ['id','title','creator','location','date'];
+    mapFeatures.eachLayer(function(l){
+      var f = l.feature;
+      f.properties.index = mapFeatures.getLayers().indexOf(l);
+      fuseSearchCtrl.indexFeatures(f, props);
     });
+    fuseSearchCtrl.on('select', function(e) {
+      var l = mapFeatures.getLayers()[e.feature.properties.index];
+      if (l) {
+        map.setView(l.getLatLng(), map.getZoom());
+        l.openPopup();
+      }
+    });
+    {% endif %}
 
-    /* Load the OSRS world map image and overlay it */
-    var imgUrl = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
-    var img = new Image();
-    img.onload = function() {
-        var w = img.naturalWidth || img.width;
-        var h = img.naturalHeight || img.height;
-        var imageBounds = [[0,0], [h, w]]; // top-left to bottom-right in simple CRS
-
-        /* Add image overlay as the basemap */
-        var imageLayer = L.imageOverlay(imgUrl, imageBounds).addTo(map);
-
-        /* Configure map view/limits */
-        map.setMaxBounds(imageBounds);
-        map.fitBounds(imageBounds);
-
-        {% if site.data.theme.map-cluster == true %}
-        /* cluster group if enabled */
-        var markers = L.markerClusterGroup({ maxClusterRadius: 40 });
-        {% endif %}
-
-        /* Helper: convert metadata (latitude, longitude) -> image coords (y, x) */
-        function toImageLatLng(lat, lng) {
-            if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) return null;
-
-            var y = lat;
-            var x = lng;
-
-            /* Heuristics:
-               - If values are between 0 and 1, treat as fractions of image size.
-               - Else if between -1 and 1, also treat as fractions.
-               - Else if between 0 and 100 (or -100..100), treat as percentages.
-               - Else assume they are already in image pixels.
-            */
-            var aLat = Math.abs(lat);
-            var aLng = Math.abs(lng);
-            if ((aLat <= 1 && aLng <= 1)) {
-                y = lat * h;
-                x = lng * w;
-            } else if ((aLat <= 100 && aLng <= 100)) {
-                y = (lat / 100.0) * h;
-                x = (lng / 100.0) * w;
-            } // else: treat as pixels already
-
-            return L.latLng(y, x);
+    /* Mostrar popup por id si viene en la URL (?marker=ID) */
+    if (markerFilter != "") {
+      {% if site.data.theme.map-cluster == true %}
+      markers.eachLayer(layer => {
+        if (layer.feature.properties.id === markerFilter) {
+          if (markers.getVisibleParent(layer)["_childCount"]) {
+            markers.getVisibleParent(layer).spiderfy();
+          }
+          layer.openPopup();
         }
-
-        /* popup builder */
-        function objectPopups(feature, layer) {
-            feature.layer = layer;
-            var itemHref = '{{ "/item.html" | relative_url }}?id=' + feature.properties.link;
-            var thumbSrc;
-            if (feature.properties.youtube) {
-                thumbSrc = 'https://img.youtube.com/vi/' +  feature.properties.youtube + '/default.jpg';
-            } else if (feature.properties.format && feature.properties.format.includes("image")) {
-                thumbSrc = feature.properties.image ? feature.properties.image : '{{ "/assets/img/default.png" | relative_url }}';
-            } else {
-                thumbSrc = '{{ "/assets/img/default.png" | relative_url }}';
-            }
-            var metaData = '<ul class="list-unstyled">';
-            {% for f in fields %} 
-            {% if f[2] == "true" %}metaData = metaData + '<li><strong>{{ f[1] }}:</strong> ' + (feature.properties[{{ f.field | jsonify }}] || '') + '</li>';{% endif %}
-            {% endfor %}
-            metaData = metaData + '</ul>';
-            var popupText = `<div class="card map-popup h-100 border border-light-subtle rounded-1 overflow-hidden">
-                <img class="card-img-top" src="${thumbSrc}" alt="">
-                <div class="card-body">
-                    <h3 class="h5 card-title"><a href="${itemHref}">${feature.properties.title || '(sin título)'}</a></h3>
-                    ${metaData}
-                </div>
-            </div>`;
-            layer.bindPopup(popupText);
+      });
+      {% else %}
+      mapFeatures.eachLayer(layer => {
+        if (layer.feature.properties.id === markerFilter) {
+          layer.openPopup();
         }
+      });
+      {% endif %}
+    }
 
-        /* place markers, transforming lat/lon into image coordinates */
-        function objectMarkers(feature/*, latlngIgnored*/) {
-            var coords = feature.geometry && feature.geometry.coordinates ? feature.geometry.coordinates : null;
-            var ll = coords ? toImageLatLng(coords[1], coords[0]) : null;
-            if (!ll) return null;
-            var marker = L.marker(ll, { alt: feature.properties.title });
-            {% if site.data.theme.map-cluster == true %}markers.addLayer(marker);{% endif %}
-            return marker;
-        }
+  }; // end img.onload
 
-        var mapFeatures = L.geoJson(geodata, {
-            onEachFeature: objectPopups,
-            pointToLayer: objectMarkers,
-            filter: function(feature) {
-                /* only render items that have coordinates */
-                return feature && feature.geometry && feature.geometry.coordinates &&
-                       feature.geometry.coordinates.length === 2 &&
-                       !isNaN(feature.geometry.coordinates[0]) && !isNaN(feature.geometry.coordinates[1]);
-            }
-        }){% if site.data.theme.map-cluster != true %}.addTo(map);{% else %};
-        map.addLayer(markers);{% endif %}
-
-        {% if site.data.theme.map-search == true %}
-        /* add leaflet-fusesearch (works on popups/layers) */
-        var options = {
-            title: 'Buscar objetos del mapa',
-            placeholder: 'Buscar...',
-            threshold: 0.35,
-            showInvisibleFeatures: true,
-            position: 'topleft'
-        };
-        var fuseSearchCtrl = L.control.fuseSearch(options);
-        map.addControl(fuseSearchCtrl);
-        var props = ['id','title','creator','location','date'];
-        mapFeatures.eachLayer(function(l){
-            var f = l.feature;
-            f.properties.index = mapFeatures.getLayers().indexOf(l);
-            fuseSearchCtrl.indexFeatures(f, props);
-        });
-        fuseSearchCtrl.on('select', function(e) {
-            var l = mapFeatures.getLayers()[e.feature.properties.index];
-            if (l) {
-                map.setView(l.getLatLng(), map.getZoom());
-                l.openPopup();
-            }
-        });
-        {% endif %}
-
-        /* Show a popup if id passed in URL (?marker=objectid) */
-        if (markerFilter != "") {
-            {% if site.data.theme.map-cluster == true %}
-            markers.eachLayer(layer => {
-                if (layer.feature.properties.id === markerFilter) {
-                    if (markers.getVisibleParent(layer)["_childCount"]) {
-                        markers.getVisibleParent(layer).spiderfy();
-                    }
-                    layer.openPopup();
-                }
-            });
-            {% else %}
-            mapFeatures.eachLayer(layer => {
-                if (layer.feature.properties.id === markerFilter) {
-                    layer.openPopup();
-                }
-            });
-            {% endif %}
-        }
-
-    }; // end img.onload
-
-    img.src = imgUrl;
+  img.src = imgUrl;
 
 })();
 </script>
