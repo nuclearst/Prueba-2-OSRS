@@ -1,50 +1,73 @@
-<!-- Asegura que el mapa tenga altura -->
-<style>
-  #map { height: 70vh; }
-</style>
+<!-- Altura del contenedor del mapa -->
+<style>#map{height:70vh}</style>
+
+<!-- Cargar librerías JS de Leaflet y plugins -->
+<script src="{{ '/assets/lib/leaflet/leaflet.js' | relative_url }}"></script>
+<script src="{{ '/assets/lib/leaflet/Leaflet.fullscreen.min.js' | relative_url }}"></script>
+{% if site.data.theme.map-search == true %}
+<script src="{{ '/assets/lib/leaflet/leaflet.fusesearch.js' | relative_url }}"></script>
+{% endif %}
+{% if site.data.theme.map-cluster == true %}
+<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.js' | relative_url }}"></script>
+<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.freezable.js' | relative_url }}"></script>
+{% endif %}
+
+{%- comment -%}
+  Preparar variables de Liquid que usa el script (icons, items, fields)
+{%- endcomment -%}
+{%- if site.data.theme.icons -%}
+  {% assign icons = site.data.theme.icons %}
+{%- else -%}
+  {% assign cb_icons = site.pages | where: "name","cb-icons.svg" | first %}
+  {% assign icons = cb_icons.icons %}
+{%- endif -%}
+
+{%- assign fields = site.data.config-map -%}
+{% if site.data.theme.map-child-objects == true %}
+  {%- assign items = site.data[site.metadata] | where_exp: 'item','item.objectid' -%}
+{% else %}
+  {%- assign items = site.data[site.metadata] | where_exp: 'item','item.objectid' | where_exp: 'item','item.parentid == nil' -%}
+{% endif %}
+{%- comment -%}
+  Si ya tienes columnas x,y en tu CSV, puedes filtrar aquí:
+  {% assign items = items | where_exp:'item','item.x and item.y' %}
+{%- endcomment -%}
 
 <script>
 (function () {
   /* ===========
      CONFIG BASE
      =========== */
-  // Ruta a tu imagen del mapa (usando Jekyll para URL relativa en GitHub Pages)
   const OSRS_IMAGE_URL = '{{ "/assets/osrs/osrs_world_map.png" | relative_url }}';
+  const GAME_TO_PX = 1;          // si tus datos vienen en "tiles", ajusta aquí
+  const ORIGIN = { x: 0, y: 0 };  // offset si el (0,0) de juego no es la esquina sup-izq del PNG
 
-  // Si tus datos vienen en "tiles" del juego y quieres convertirlos a px,
-  // ajusta este factor. Si ya vienen en píxeles, déjalo en 1.
-  const GAME_TO_PX = 1;
-  const ORIGIN = { x: 0, y: 0 }; // offset si el (0,0) del juego no coincide con la esquina sup-izq del PNG
-
-  // Lee parámetros URL (?location=x,y y ?marker=id)
+  // Parámetros URL (?location=x,y y ?marker=id)
   const url = new URL(window.location);
-  const locParam = url.searchParams.get('location'); // "x,y" en píxeles
+  const locParam = url.searchParams.get('location');
   const markerFilter = url.searchParams.get('marker') || "";
 
-  // Crea el mapa con CRS.Simple (coordenadas planas)
+  // Crear mapa en coordenadas planas (píxeles)
   const map = L.map('map', {
     crs: L.CRS.Simple,
     minZoom: -2,
     maxZoom: 5,
     zoomControl: true
   });
-
   if (L.Control.Fullscreen) map.addControl(new L.Control.Fullscreen());
 
-  // Cargar la imagen primero para obtener ancho/alto reales
+  // Cargar la imagen para conocer su tamaño real
   const baseImg = new Image();
   baseImg.src = OSRS_IMAGE_URL;
   baseImg.onload = function () {
     const OSRS_SIZE = { width: baseImg.naturalWidth, height: baseImg.naturalHeight };
+    const bounds = [[0, 0], [8712.height, 4912.width]]; // [ [y0,x0], [y1,x1] ]
 
-    // Bounds del lienzo de la imagen: [[y0,x0], [y1,x1]]
-    const bounds = [[0, 0], [OSRS_SIZE.height, OSRS_SIZE.width]];
-
-    // Capa base: imagen del mapa
+    // Capa base
     const osrsBase = L.imageOverlay(OSRS_IMAGE_URL, bounds, { interactive: false }).addTo(map);
     L.control.layers({ "OSRS World Map": osrsBase }, {}).addTo(map);
 
-    // Centrado inicial (si ?location=)
+    // Centrado inicial (si viene ?location=x,y)
     let initialCenter = null, mapZoom = 0;
     if (locParam) {
       const parts = locParam.split(',').map(Number);
@@ -53,12 +76,11 @@
         mapZoom = 2;
       }
     }
-
     if (initialCenter) map.setView(initialCenter, mapZoom);
     else map.fitBounds(bounds);
 
     /* ========================
-       GEODATA (x,y en píxeles)
+       GEODATA en x,y (píxeles)
        ======================== */
     var geodata = { "type": "FeatureCollection", "features": [
       {% for item in items %}
@@ -75,12 +97,10 @@
       }{% unless forloop.last %}, {% endunless %}{% endfor %}
     ]};
 
-    // Utilidades (por si quieres convertir de "tiles" a px)
-    function gameToPxPt(game) {
-      return { x: ORIGIN.x + game.x * GAME_TO_PX, y: ORIGIN.y + game.y * GAME_TO_PX };
-    }
-    function pxToLatLng(px) { return L.latLng(px.y, px.x); }
-    function gameToLatLng(game) { return pxToLatLng(gameToPxPt(game)); }
+    // Helpers por si conviertes de "tiles" a píxeles
+    function gameToPxPt(game) { return { x: ORIGIN.x + game.x * GAME_TO_PX, y: ORIGIN.y + game.y * GAME_TO_PX }; }
+    function pxToLatLng(px)   { return L.latLng(px.y, px.x); }
+    function gameToLatLng(g)  { return pxToLatLng(gameToPxPt(g)); }
 
     /* ============================
        Buscador (si está habilitado)
@@ -108,7 +128,7 @@
        ============================ */
     {% if site.data.theme.map-cluster == true %}
     var markers = L.markerClusterGroup({
-      maxClusterRadius: {{ site.data.theme.map-cluster-radius | default: 15 }},
+      maxClusterRadius: {{ site.data.theme.map-cluster-radius | default: 25 }},
       singleMarkerMode: true,
       iconCreateFunction: function(cluster) {
         var childCount = cluster.getChildCount();
@@ -131,7 +151,6 @@
       {% if site.data.theme.map-search == true %}
       feature.layer = layer;
       {% endif %}
-
       var itemHref = '{{ "/item.html" | relative_url }}?id=' + feature.properties.link;
 
       var thumbSrc;
@@ -171,7 +190,6 @@
        Marcadores desde GeoJSON (x,y -> lat,lng)
        ========================================= */
     function objectMarkers(feature, latlng) {
-      // L.geoJSON ya interpreta [x,y] como [lng,lat] y lo invierte a [lat,lng]
       var marker = L.marker(latlng, { alt: feature.properties.title });
       {% if site.data.theme.map-cluster == true %}markers.addLayer(marker);{% endif %}
       return marker;
@@ -184,22 +202,16 @@
     {% if site.data.theme.map-cluster != true %}.addTo(map);{% else %};
     map.addLayer(markers);{% endif %}
 
-    // Auto-encuadre si no hay ?location= y si hay features
+    // Auto-encuadre (si no ?location=)
     {% if site.data.theme.auto-center-map == true %}
     if (!locParam) {
       const featureBounds = mapFeatures.getBounds();
-      if (featureBounds?.isValid()) map.fitBounds(featureBounds);
-      else map.fitBounds(bounds);
-    } else {
-      map.setView(initialCenter, mapZoom);
+      if (featureBounds?.isValid()) map.fitBounds(featureBounds); else map.fitBounds(bounds);
     }
-    {% else %}
-    if (initialCenter) map.setView(initialCenter, mapZoom);
-    else map.fitBounds(bounds);
     {% endif %}
 
-    // Abrir popup si ?marker=id
-    if (markerFilter !== "") {
+    // Abrir popup por ?marker=
+    if (markerFilter) {
       {% if site.data.theme.map-cluster == true %}
       markers.eachLayer(layer => {
         if (layer.feature && layer.feature.properties.id === markerFilter) {
@@ -217,9 +229,6 @@
       });
       {% endif %}
     }
-
-    // Ejemplo opcional: marcar un punto si tus coords están en "tiles"
-    // L.marker(gameToLatLng({ x: 3200, y: 3200 })).addTo(map).bindPopup("Ejemplo 3200,3200");
   };
 
   baseImg.onerror = function () {
