@@ -40,9 +40,10 @@
     {% endfor %}
   ]};
 
-  /* URL param to open a specific marker (?marker=objectid) */
+  /* URL params (?location=lat,lng & ?marker=id) */
   let url = new URL(window.location);
-  var markerFilter = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
+  var locationParam = url.searchParams.get('location');   // lat,lng en el MISMO sistema que metadata (px | % | fracción)
+  var markerFilter  = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
 
   /* Init map on image coordinates */
   var map = L.map('map', {
@@ -64,7 +65,7 @@
     map.fitBounds(imageBounds);
 
     {% if site.data.theme.map-cluster == true %}
-    /* MarkerCluster con punto verde (singleMarkerMode) */
+    /* Punto verde como en el modelo base */
     var markers = L.markerClusterGroup({
       maxClusterRadius: 40,
       singleMarkerMode: true,
@@ -105,8 +106,8 @@
 
       var metaData = '<ul class="list-unstyled">';
       {% for f in fields %}
-      {% if f.popup == 'true' %}
-      metaData += '<li><strong>{{ f.label }}:</strong> ' + (feature.properties[{{ f.field | jsonify }}] || '') + '</li>';
+      {% if f.popup == 'true' or f[2] == 'true' %}
+      metaData += '<li><strong>{{ f.label | default: f[1] }}:</strong> ' + (feature.properties[{{ f.field | jsonify }}] || '') + '</li>';
       {% endif %}
       {% endfor %}
       metaData += '</ul>';
@@ -122,8 +123,8 @@
     }
 
     /* Marcadores:
-       - Si hay cluster -> L.marker (y cluster los pinta como punto verde en singleMarkerMode).
-       - Si NO hay cluster -> L.circleMarker estilo verde. */
+       - Si hay cluster -> L.marker (y el cluster los dibuja como punto verde).
+       - Si NO hay cluster -> L.circleMarker verde. */
     function objectMarkers(feature/*, latlngIgnored*/) {
       var coords = feature.geometry && feature.geometry.coordinates ? feature.geometry.coordinates : null;
       var ll = coords ? toImageLatLng(coords[1], coords[0]) : null;
@@ -156,43 +157,36 @@
     }){% if site.data.theme.map-cluster != true %}.addTo(map);{% else %};
     map.addLayer(markers);{% endif %}
 
-    {% if site.data.theme.map-search == true %}
-    /* Búsqueda (si está activa) */
-    var options = {
-      title: 'Buscar objetos del mapa',
-      placeholder: 'Buscar...',
-      threshold: 0.35,
-      showInvisibleFeatures: true,
-      position: 'topleft'
-    };
-    var fuseSearchCtrl = L.control.fuseSearch(options);
-    map.addControl(fuseSearchCtrl);
-    var props = ['id','title','creator','location','date'];
-    mapFeatures.eachLayer(function(l){
-      var f = l.feature;
-      f.properties.index = mapFeatures.getLayers().indexOf(l);
-      fuseSearchCtrl.indexFeatures(f, props);
-    });
-    fuseSearchCtrl.on('select', function(e) {
-      var l = mapFeatures.getLayers()[e.feature.properties.index];
-      if (l) { map.setView(l.getLatLng(), map.getZoom()); l.openPopup(); }
-    });
-    {% endif %}
+    /* === NUEVO: centrar usando ?location=lat,lng === */
+    if (locationParam) {
+      var parts = locationParam.split(',');
+      if (parts.length === 2) {
+        var lat = parseFloat(parts[0]);
+        var lng = parseFloat(parts[1]);
+        var ll  = toImageLatLng(lat, lng);
+        if (ll) {
+          var targetZoom = Math.max(map.getZoom() + 1, 1); // acércate un paso
+          map.setView(ll, targetZoom, { animate: true });
+        }
+      }
+    }
 
-    /* Abrir popup si ?marker=ID */
+    /* Abrir popup / spiderfy si ?marker=ID */
     if (markerFilter != "") {
       {% if site.data.theme.map-cluster == true %}
       markers.eachLayer(layer => {
-        if (layer.feature.properties.id === markerFilter) {
+        if (layer.feature && layer.feature.properties.id === markerFilter) {
           if (markers.getVisibleParent(layer)["_childCount"]) {
             markers.getVisibleParent(layer).spiderfy();
           }
+          map.panTo(layer.getLatLng());
           layer.openPopup();
         }
       });
       {% else %}
       mapFeatures.eachLayer(layer => {
-        if (layer.feature.properties.id === markerFilter) {
+        if (layer.feature && layer.feature.properties.id === markerFilter) {
+          map.panTo(layer.getLatLng());
           layer.openPopup();
         }
       });
