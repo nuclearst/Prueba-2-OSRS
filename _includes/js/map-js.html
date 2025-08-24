@@ -1,0 +1,204 @@
+\
+{%- if site.data.theme.icons -%}{% assign icons = site.data.theme.icons %}{% else %}
+{% assign cb_icons = site.pages | where: "name","cb-icons.svg" | first %}
+{% assign icons = cb_icons.icons %}{%- endif -%}
+{%- assign fields = site.data.config-map -%}
+<script src="{{ '/assets/lib/leaflet/leaflet.js' | relative_url }}"></script>
+<script src="{{ '/assets/lib/leaflet/Leaflet.fullscreen.min.js' | relative_url }}"></script>
+{% if site.data.theme.map-search == true %}<script src="{{ '/assets/lib/leaflet/fuse.min.js' | relative_url }}"></script>
+<script src="{{ '/assets/lib/leaflet/leaflet.fusesearch.js' | relative_url }}"></script>{% endif %}
+{% if site.data.theme.map-cluster == true %}<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.js' | relative_url }}"></script>{% endif %}
+{% if site.data.theme.map-search == true and site.data.theme.map-cluster == true %}<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.freezable.js' | relative_url }}"></script>{% endif %}
+
+<script>
+(function(){
+  // === Carga cruda desde CSV ===
+  var RAW = {{ site.data[site.metadata] | jsonify }};
+
+  // === Utils ===
+  function toNum(v){
+    if (v===null || v===undefined || v==="") return NaN;
+    var n = Number(v);
+    return isFinite(n) ? n : NaN;
+  }
+
+  function clamp(n, min, max){ return Math.max(min, Math.min(max, n)); }
+
+  function thumbFrom(r){
+    return r.thumbnail || r.image_thumb || r.image || r.file || "{{ '/assets/img/placeholder.png' | relative_url }}";
+  }
+
+  function itemHrefFrom(r){
+    if (r.objectid) return "{{ '/items/' | relative_url }}" + encodeURIComponent(r.objectid) + ".html";
+    if (r.id)       return "{{ '/items/' | relative_url }}" + encodeURIComponent(r.id) + ".html";
+    if (r.url)      return r.url;
+    return "#";
+  }
+
+  function subjectBadges(r){
+    var raw = r.subject || r.keywords || r.tags || "";
+    var arr = Array.isArray(raw) ? raw : String(raw).split(/;|,|\|/).map(s => s.trim()).filter(Boolean);
+    if (!arr.length) return "";
+    return arr.slice(0,6).map(s => `<span class="badge bg-light text-dark border me-1">${s}</span>`).join(" ");
+  }
+
+  // Convierte pixeles (CSV) a latLng de imagen (CRS.Simple)
+  function toImageLatLngFactory(w, h){
+    return function pxToLatLng(latPx, lonPx){
+      var y = toNum(latPx);
+      var x = toNum(lonPx);
+      if (isNaN(y) || isNaN(x)) return null;
+      y = clamp(y, 0, h-1);
+      x = clamp(x, 0, w-1);
+      return L.latLng(y, x); // nota: (y,x) porque el origen está arriba-izquierda
+    };
+  }
+
+  // === Parámetros de URL ===
+  var url = new URL(window.location);
+  var locationParam = url.searchParams.get('location'); // "lat,lon" en pixeles
+  var markerFilter  = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
+
+  // === Inicializa mapa con imagen base (OSRS) ===
+  var map = L.map('map', { crs: L.CRS.Simple, zoomControl: true, fullscreenControl: true });
+  var imgUrl = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
+  var img = new Image();
+  img.onload = function(){
+    var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    var imageBounds = [[0,0], [h, w]];
+    L.imageOverlay(imgUrl, imageBounds).addTo(map);
+    map.setMaxBounds(imageBounds);
+    map.fitBounds(imageBounds);
+
+    {% if site.data.theme.map-cluster == true %}
+    var markers = L.markerClusterGroup({
+      maxClusterRadius: {{ site.data.theme.map-cluster-radius | default: 25 }},
+      singleMarkerMode: true,
+      spiderfyOnMaxZoom: true
+    });
+    {% endif %}
+
+    var toImageLatLng = toImageLatLngFactory(w, h);
+
+    // === Construye GeoJSON (solo si hay pixeles válidos) ===
+    var features = [];
+    for (var i=0; i<RAW.length; i++){
+      var r = RAW[i] || {};
+      var lat = toNum(r.latitude);   // CSV: pixeles en Y
+      var lon = toNum(r.longitude);  // CSV: pixeles en X
+      if (isNaN(lat) || isNaN(lon)) continue;
+
+      features.push({
+        "type":"Feature",
+        "geometry":{"type":"Point","coordinates":[ lon, lat ]},
+        "properties":{
+          "id": (r.objectid || "").toString().trim(),
+          "title": (r.title || "").toString(),
+          "creator": (r.creator || "").toString(),
+          "location": (r.location || "").toString(),
+          "date": (r.date || "").toString(),
+          "thumb": thumbFrom(r),
+          "href": itemHrefFrom(r),
+          "subject": r.subject || r.keywords || r.tags || ""
+        }
+      });
+    }
+
+    var geodata = {"type":"FeatureCollection","features":features};
+
+    // === Popup y hover ===
+    function objectPopups(feature, layer){
+      var metaBits = [];
+      if (feature.properties.creator)  metaBits.push(`<div><strong>Creator:</strong> ${feature.properties.creator}</div>`);
+      if (feature.properties.date)     metaBits.push(`<div><strong>Date:</strong> ${feature.properties.date}</div>`);
+      if (feature.properties.location) metaBits.push(`<div><strong>Location:</strong> ${feature.properties.location}</div>`);
+      var subjects = subjectBadges({subject: feature.properties.subject});
+      if (subjects) metaBits.push(`<div class="mt-2">${subjects}</div>`);
+      var metaData = metaBits.join("");
+
+      var itemHref = feature.properties.href || "#";
+      var thumbSrc = feature.properties.thumb || "{{ '/assets/img/placeholder.png' | relative_url }}";
+
+      var popupText = `<div class="card map-popup h-100 border border-light-subtle rounded-1 overflow-hidden" style="min-width:240px;max-width:320px;">
+          <img class="card-img-top" src="${thumbSrc}" alt="">
+          <div class="card-body">
+            <h3 class="h6 card-title mb-2"><a href="${itemHref}">${feature.properties.title || '(sin título)'}</a></h3>
+            ${metaData}
+          </div>
+        </div>`;
+
+      layer.bindPopup(popupText);
+
+      // Vista previa al pasar el cursor
+      layer.on('mouseover', function(){ try { this.openPopup(); } catch(e){} });
+      layer.on('mouseout',  function(){ try { this.closePopup(); } catch(e){} });
+    }
+
+    function objectMarkers(feature){
+      var c = feature.geometry && feature.geometry.coordinates ? feature.geometry.coordinates : null;
+      var ll = c ? toImageLatLng(c[1], c[0]) : null;
+      if (!ll) return null;
+      {% if site.data.theme.map-cluster == true %}
+      var m = L.marker(ll, { alt: feature.properties.title });
+      markers.addLayer(m);
+      return m;
+      {% else %}
+      return L.circleMarker(ll, { radius: 6, weight: 1, color: '#147a3c', fillColor: '#2ecc71', fillOpacity: 0.9 });
+      {% endif %}
+    }
+
+    var mapFeatures = L.geoJson(geodata, {
+      onEachFeature: objectPopups,
+      pointToLayer: objectMarkers
+    }){% if site.data.theme.map-cluster != true %}.addTo(map);{% else %}; map.addLayer(markers);{% endif %}
+
+    // === URL: ?location=LAT,LON en pixeles ===
+    if (locationParam){
+      var p = locationParam.split(',');
+      if (p.length===2){
+        var ll = toImageLatLng(toNum(p[0]), toNum(p[1]));
+        if (ll) map.setView(ll, Math.max(map.getZoom()+1,1), {animate:true});
+      }
+    }
+
+    // === URL: ?marker=<objectid> abre popup ===
+    if (markerFilter){
+      {% if site.data.theme.map-cluster == true %}
+      markers.eachLayer(function(layer){
+        if (layer.feature && layer.feature.properties.id === markerFilter){
+          var parent = markers.getVisibleParent(layer);
+          if (parent && parent._childCount) { parent.spiderfy(); }
+          map.panTo(layer.getLatLng()); layer.openPopup();
+        }
+      });
+      {% else %}
+      mapFeatures.eachLayer(function(layer){
+        if (layer.feature && layer.feature.properties.id === markerFilter){
+          map.panTo(layer.getLatLng()); layer.openPopup();
+        }
+      });
+      {% endif %}
+    }
+
+    // === (Opcional) Búsqueda si está activa ===
+    {% if site.data.theme.map-search == true %}
+    var fusesearch = new L.Control.FuseSearch({
+      title: 'Buscar',
+      placeholder: 'Buscar…',
+      maxResultLength: 15,
+      threshold: {{ site.data.theme.map-search-fuzziness | default: 0.35 }}
+    });
+    map.addControl(fusesearch);
+    var props = ['title','creator','location','date','subject'];
+    fusesearch.indexFeatures(geodata, props);
+
+    fusesearch.on('select', function(e){
+      var feat = e.feature;
+      var ll = toImageLatLng(feat.geometry.coordinates[1], feat.geometry.coordinates[0]);
+      if (ll) map.setView(ll, Math.max(map.getZoom()+1,1), {animate:true});
+    });
+    {% endif %}
+  };
+  img.src = imgUrl;
+})();
+</script>
