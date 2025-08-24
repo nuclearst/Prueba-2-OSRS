@@ -1,0 +1,172 @@
+{%- if site.data.theme.icons -%}{% assign icons = site.data.theme.icons %}{% else %}
+{% assign cb_icons = site.pages | where: "name","cb-icons.svg" | first %}
+{% assign icons = cb_icons.icons %}{%- endif -%}
+{%- assign fields = site.data.config-map -%}
+<script src="{{ '/assets/lib/leaflet/leaflet.js' | relative_url }}"></script>
+<script src="{{ '/assets/lib/leaflet/Leaflet.fullscreen.min.js' | relative_url }}"></script>
+{% if site.data.theme.map-search == true %}<script src="{{ '/assets/lib/leaflet/fuse.min.js' | relative_url }}"></script>
+<script src="{{ '/assets/lib/leaflet/leaflet.fusesearch.js' | relative_url }}"></script>{% endif %}
+{% if site.data.theme.map-cluster == true %}<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.js' | relative_url }}"></script>{% endif %}
+{% if site.data.theme.map-search == true and site.data.theme.map-cluster == true %}<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.freezable.js' | relative_url }}"></script>{% endif %}
+
+<script>
+(function(){
+  // 1) Raw records from CSV (no Liquid filtering)
+  var RAW = {{ site.data[site.metadata] | jsonify }};
+
+  // 2) Utilities
+  function toNum(v){
+    if (v===null || v===undefined) return NaN;
+    var s = String(v).trim().replace(',', '.'); // accept 44,5
+    var n = parseFloat(s);
+    return isNaN(n) ? NaN : n;
+  }
+  function toImageLatLngFactory(w, h){
+    return function toImageLatLng(lat, lng){
+      if (lat==null || lng==null) return null;
+      var aLat = Math.abs(lat), aLng = Math.abs(lng);
+      var y = lat, x = lng;
+      if (aLat <= 1 && aLng <= 1){ // fraction 0..1
+        y = Math.min(lat, 0.9999) * h;
+        x = Math.min(lng, 0.9999) * w;
+      } else if (aLat <= 100 && aLng <= 100){ // percent 0..100
+        y = (Math.min(lat, 99.9999) / 100) * h;
+        x = (Math.min(lng, 99.9999) / 100) * w;
+      } // else: pixels
+      y = Math.max(0, Math.min(h-1, y));
+      x = Math.max(0, Math.min(w-1, x));
+      return L.latLng(y, x);
+    };
+  }
+
+  // 3) URL params
+  var url = new URL(window.location);
+  var locationParam = url.searchParams.get('location');
+  var markerFilter  = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
+
+  // 4) Init map
+  var map = L.map('map', { crs: L.CRS.Simple, zoomControl: true, fullscreenControl: true });
+  var imgUrl = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
+  var img = new Image();
+  img.onload = function(){
+    var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+    var imageBounds = [[0,0], [h, w]];
+    L.imageOverlay(imgUrl, imageBounds).addTo(map);
+    map.setMaxBounds(imageBounds);
+    map.fitBounds(imageBounds);
+
+    {% if site.data.theme.map-cluster == true %}
+    var markers = L.markerClusterGroup({ maxClusterRadius: {{ site.data.theme.map-cluster-radius | default: 25 }}, singleMarkerMode: true, spiderfyOnMaxZoom: true });
+    {% endif %}
+
+    var toImageLatLng = toImageLatLngFactory(w, h);
+
+    // 5) Build features robustly (no Liquid loops here)
+    var features = [];
+    for (var i=0; i<RAW.length; i++){
+      var r = RAW[i] || {};
+      var lat = toNum(r.latitude);
+      var lng = toNum(r.longitude);
+      if (isNaN(lat) || isNaN(lng)) continue;
+
+      features.push({
+        "type":"Feature",
+        "geometry":{"type":"Point","coordinates":[ lng, lat ]},
+        "properties":{
+          "id": r.objectid || "",
+          "title": r.title || "",
+          "creator": r.creator || "",
+          "location": r.location || "",
+          "date": r.date || "",
+          "format": r.format || "",
+          "youtube": r.youtubeid || "",
+          "vimeo": r.vimeoid || "",
+          "image": r.filename ? "{{ '/objects/' | relative_url }}"+r.filename : "",
+          "link": r.objectid || ""
+        }
+      });
+    }
+    var geodata = { "type":"FeatureCollection", "features": features };
+    window._DBG_map = {count: geodata.features.length};
+
+    function objectPopups(feature, layer){
+      feature.layer = layer;
+      var itemHref = '{{ "/item.html" | relative_url }}?id=' + feature.properties.link;
+
+      var fmt = (feature.properties.format || "").toString().toLowerCase();
+      var thumbSrc;
+      if (feature.properties.youtube) {
+        thumbSrc = 'https://img.youtube.com/vi/' +  feature.properties.youtube + '/default.jpg';
+      } else if (fmt.includes("image") || fmt.includes("jpg") || fmt.includes("png") || fmt.includes("gif")) {
+        thumbSrc = feature.properties.image ? feature.properties.image : '{{ "/assets/img/default.png" | relative_url }}';
+      } else {
+        thumbSrc = '{{ "/assets/img/default.png" | relative_url }}';
+      }
+
+      var metaData = '<ul class="list-unstyled">';
+      {% for f in fields %}
+      {% if f.popup == 'true' or f[2] == 'true' %}
+      metaData += '<li><strong>{{ f.label | default: f[1] }}:</strong> ' + (feature.properties[{{ f.field | jsonify }}] || '') + '</li>';
+      {% endif %}
+      {% endfor %}
+      metaData += '</ul>';
+
+      var popupText = `<div class="card map-popup h-100 border border-light-subtle rounded-1 overflow-hidden">
+          <img class="card-img-top" src="${thumbSrc}" alt="">
+          <div class="card-body">
+            <h3 class="h5 card-title"><a href="${itemHref}">${feature.properties.title || '(sin título)'}</a></h3>
+            ${metaData}
+          </div>
+        </div>`;
+      layer.bindPopup(popupText);
+    }
+
+    function objectMarkers(feature/*, latlngIgnored*/){
+      var c = feature.geometry && feature.geometry.coordinates ? feature.geometry.coordinates : null;
+      var ll = c ? toImageLatLng(c[1], c[0]) : null;
+      if (!ll) return null;
+      {% if site.data.theme.map-cluster == true %}
+      var m = L.marker(ll, { alt: feature.properties.title });
+      markers.addLayer(m);
+      return m;
+      {% else %}
+      return L.circleMarker(ll, { radius: 6, weight: 1, color: '#147a3c', fillColor: '#2ecc71', fillOpacity: 0.9 });
+      {% endif %}
+    }
+
+    var mapFeatures = L.geoJson(geodata, {
+      onEachFeature: objectPopups,
+      pointToLayer: objectMarkers
+    }){% if site.data.theme.map-cluster != true %}.addTo(map);{% else %}; map.addLayer(markers);{% endif %}
+
+    // 6) Center using ?location
+    if (locationParam){
+      var p = locationParam.split(',');
+      if (p.length===2){
+        var ll = toImageLatLng(toNum(p[0]), toNum(p[1]));
+        if (ll) map.setView(ll, Math.max(map.getZoom()+1,1), {animate:true});
+      }
+    }
+
+    // 7) Open popup for ?marker
+    if (markerFilter){
+      {% if site.data.theme.map-cluster == true %}
+      markers.eachLayer(function(layer){
+        if (layer.feature && layer.feature.properties.id === markerFilter){
+          if (markers.getVisibleParent(layer)["_childCount"]) { markers.getVisibleParent(layer).spiderfy(); }
+          map.panTo(layer.getLatLng()); layer.openPopup();
+        }
+      });
+      {% else %}
+      mapFeatures.eachLayer(function(layer){
+        if (layer.feature && layer.feature.properties.id === markerFilter){
+          map.panTo(layer.getLatLng()); layer.openPopup();
+        }
+      });
+      {% endif %}
+    }
+
+  };
+  img.src = imgUrl;
+})();
+</script>
