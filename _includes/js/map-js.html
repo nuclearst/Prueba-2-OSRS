@@ -8,7 +8,7 @@
 {% endif %}
 {%- assign items = items | where_exp: 'item', 'item.objectid != nil' | where_exp: 'item','item.latitude' -%}
 {%- assign fields = site.data.config-map -%}
-<!-- load leaflet dependencies -->
+<!-- Leaflet -->
 <script src="{{ '/assets/lib/leaflet/leaflet.js' | relative_url }}"></script>
 <script src="{{ '/assets/lib/leaflet/Leaflet.fullscreen.min.js' | relative_url }}"></script>
 {% if site.data.theme.map-search == true %}<script src="{{ '/assets/lib/leaflet/fuse.min.js' | relative_url }}"></script>
@@ -18,7 +18,7 @@
 
 <script>
 (function(){
-  /* Build map data (GeoJSON-like) from Jekyll metadata */
+  /* Build map data (GeoJSON-like) from metadata */
   var geodata = { "type": "FeatureCollection", "features": [
     {% for item in items %}
     { "type":"Feature",
@@ -44,71 +44,56 @@
   let url = new URL(window.location);
   var markerFilter = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
 
-  /* Init Leaflet map in image (simple) CRS */
+  /* Init map on image coordinates */
   var map = L.map('map', {
     crs: L.CRS.Simple,
     zoomControl: true,
     fullscreenControl: true
   });
 
-  /* Use OSRS world image as the "basemap" */
+  /* OSRS world image as basemap */
   var imgUrl = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
   var img = new Image();
   img.onload = function() {
     var w = img.naturalWidth || img.width;
     var h = img.naturalHeight || img.height;
-    var imageBounds = [[0,0], [h, w]]; // top-left to bottom-right in simple CRS
+    var imageBounds = [[0,0], [h, w]]; // top-left to bottom-right
 
-    /* Add image overlay and set view/limits */
-    var imageLayer = L.imageOverlay(imgUrl, imageBounds).addTo(map);
+    L.imageOverlay(imgUrl, imageBounds).addTo(map);
     map.setMaxBounds(imageBounds);
     map.fitBounds(imageBounds);
 
     {% if site.data.theme.map-cluster == true %}
-    var markers = L.markerClusterGroup({ maxClusterRadius: 40 });
+    /* MarkerCluster con punto verde (singleMarkerMode) */
+    var markers = L.markerClusterGroup({
+      maxClusterRadius: 40,
+      singleMarkerMode: true,
+      spiderfyOnMaxZoom: true
+    });
     {% endif %}
 
-    /* Helper: convert metadata (latitude, longitude) -> image coords (y, x)
-       PARCHE: clamp para que 1 (fracción) y 100% (porcentaje) no caigan fuera del borde */
+    /* === PARCHE coordenadas: fracción/porcentaje dentro del borde === */
     function toImageLatLng(lat, lng) {
       if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) return null;
-
-      var y = lat;
-      var x = lng;
-
-      /* Heurística:
-         - Si valores están entre 0 y 1 => fracciones del tamaño de la imagen.
-         - Si están entre -1 y 1 => también fracciones.
-         - Si están entre 0 y 100 (o -100..100) => porcentajes.
-         - En otro caso => píxeles (x=longitude, y=latitude).
-      */
-      var aLat = Math.abs(lat);
-      var aLng = Math.abs(lng);
+      var y = lat, x = lng;
+      var aLat = Math.abs(lat), aLng = Math.abs(lng);
       if ((aLat <= 1 && aLng <= 1)) {
-        // Fracciones: 1 => 0.9999 para quedar dentro del borde
         y = Math.min(lat, 0.9999) * h;
         x = Math.min(lng, 0.9999) * w;
       } else if ((aLat <= 100 && aLng <= 100)) {
-        // Porcentajes: 100% => 99.9999% para quedar dentro del borde
         y = (Math.min(lat, 99.9999) / 100.0) * h;
         x = (Math.min(lng, 99.9999) / 100.0) * w;
-      } // si no, interpretamos como píxeles
-
-      // Asegura estar dentro del lienzo de la imagen
+      } // else: píxeles
       y = Math.max(0, Math.min(h - 1, y));
       x = Math.max(0, Math.min(w - 1, x));
-
       return L.latLng(y, x);
     }
 
-    /* Popups por objeto */
+    /* Popup */
     function objectPopups(feature, layer) {
-      /* bind para búsqueda (si existe) */
       feature.layer = layer;
-
       var itemHref = '{{ "/item.html" | relative_url }}?id=' + feature.properties.link;
 
-      /* miniatura */
       var thumbSrc;
       if (feature.properties.youtube) {
         thumbSrc = 'https://img.youtube.com/vi/' +  feature.properties.youtube + '/default.jpg';
@@ -118,14 +103,13 @@
         thumbSrc = '{{ "/assets/img/default.png" | relative_url }}';
       }
 
-      /* metadatos para popup (según config-map.csv: label + popup=true) */
       var metaData = '<ul class="list-unstyled">';
       {% for f in fields %}
       {% if f.popup == 'true' %}
-      metaData = metaData + '<li><strong>{{ f.label }}:</strong> ' + (feature.properties[{{ f.field | jsonify }}] || '') + '</li>';
+      metaData += '<li><strong>{{ f.label }}:</strong> ' + (feature.properties[{{ f.field | jsonify }}] || '') + '</li>';
       {% endif %}
       {% endfor %}
-      metaData = metaData + '</ul>';
+      metaData += '</ul>';
 
       var popupText = `<div class="card map-popup h-100 border border-light-subtle rounded-1 overflow-hidden">
           <img class="card-img-top" src="${thumbSrc}" alt="">
@@ -137,14 +121,27 @@
       layer.bindPopup(popupText);
     }
 
-    /* Marcadores en coordenadas de imagen */
+    /* Marcadores:
+       - Si hay cluster -> L.marker (y cluster los pinta como punto verde en singleMarkerMode).
+       - Si NO hay cluster -> L.circleMarker estilo verde. */
     function objectMarkers(feature/*, latlngIgnored*/) {
       var coords = feature.geometry && feature.geometry.coordinates ? feature.geometry.coordinates : null;
-      var ll = coords ? toImageLatLng(coords[1], coords[0]) : null; // coords = [lng, lat]
+      var ll = coords ? toImageLatLng(coords[1], coords[0]) : null;
       if (!ll) return null;
+
+      {% if site.data.theme.map-cluster == true %}
       var marker = L.marker(ll, { alt: feature.properties.title });
-      {% if site.data.theme.map-cluster == true %}markers.addLayer(marker);{% endif %}
+      markers.addLayer(marker);
       return marker;
+      {% else %}
+      return L.circleMarker(ll, {
+        radius: 6,
+        weight: 1,
+        color: '#147a3c',
+        fillColor: '#2ecc71',
+        fillOpacity: 0.9
+      });
+      {% endif %}
     }
 
     /* Cargar features */
@@ -160,7 +157,7 @@
     map.addLayer(markers);{% endif %}
 
     {% if site.data.theme.map-search == true %}
-    /* Búsqueda con Fuse (si está activada en el tema) */
+    /* Búsqueda (si está activa) */
     var options = {
       title: 'Buscar objetos del mapa',
       placeholder: 'Buscar...',
@@ -178,14 +175,11 @@
     });
     fuseSearchCtrl.on('select', function(e) {
       var l = mapFeatures.getLayers()[e.feature.properties.index];
-      if (l) {
-        map.setView(l.getLatLng(), map.getZoom());
-        l.openPopup();
-      }
+      if (l) { map.setView(l.getLatLng(), map.getZoom()); l.openPopup(); }
     });
     {% endif %}
 
-    /* Mostrar popup por id si viene en la URL (?marker=ID) */
+    /* Abrir popup si ?marker=ID */
     if (markerFilter != "") {
       {% if site.data.theme.map-cluster == true %}
       markers.eachLayer(layer => {
