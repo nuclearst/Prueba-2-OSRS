@@ -1,179 +1,169 @@
-\
-{%- if site.data.theme.icons -%}{% assign icons = site.data.theme.icons %}{% else %}
-{% assign cb_icons = site.pages | where: "name","cb-icons.svg" | first %}
-{% assign icons = cb_icons.icons %}{%- endif -%}
-{%- assign fields = site.data.config-map -%}
-<script src="{{ '/assets/lib/leaflet/leaflet.js' | relative_url }}"></script>
-<script src="{{ '/assets/lib/leaflet/Leaflet.fullscreen.min.js' | relative_url }}"></script>
-{% if site.data.theme.map-search == true %}<script src="{{ '/assets/lib/leaflet/fuse.min.js' | relative_url }}"></script>
-<script src="{{ '/assets/lib/leaflet/leaflet.fusesearch.js' | relative_url }}"></script>{% endif %}
-{% if site.data.theme.map-cluster == true %}<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.js' | relative_url }}"></script>{% endif %}
-{% if site.data.theme.map-search == true and site.data.theme.map-cluster == true %}<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.freezable.js' | relative_url }}"></script>{% endif %}
+/* ===== CollectionBuilder-GH — Map (OSRS pixels) ===========================
+   Requiere Leaflet y (opcional) Leaflet.markercluster cargados en map.html
+   Se dibuja sobre una imagen (CRS.Simple) con coordenadas en píxeles.
+   - Imagen base: 8712x4912 px (OSRS world map)
+   - Soporta ?location=LAT,LNG y ?marker=ID
+   - Vista previa al pasar el cursor; botón "View Item" corrige a item.html?id=
+   ======================================================================= */
 
-<script>
+// ---------- Config de imagen ----------
+const IMAGE_WIDTH  = 8712; // X
+const IMAGE_HEIGHT = 4912; // Y
+const IMAGE_URL = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
+
+// ---------- Utilidades ----------
+function clamp(n, min, max){ return Math.max(min, Math.min(max, n)); }
+
+function getParam(name){
+  const m = new RegExp('[?&]' + name + '=([^&]+)').exec(location.search);
+  return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : null;
+}
+
+function itemHref(r){
+  const id = (r.objectid || r.id || "").toString().trim();
+  if(!id) return "#";
+  return "{{ '/item.html' | relative_url }}?id=" + encodeURIComponent(id);
+}
+
+function thumbUrl(r){
+  // intenta varios campos comunes de CollectionBuilder; si no, usa filename en /objects/thumbs/
+  if (r.thumbnail && r.thumbnail !== "null") return r.thumbnail;
+  if (r.image && r.image !== "null") return r.image;
+  if (r.image_small && r.image_small !== "null") return r.image_small;
+  if (r.image_thumb && r.image_thumb !== "null") return r.image_thumb;
+  if (r.filename && r.filename !== "null") return "{{ '/objects/thumbs/' | relative_url }}" + r.filename;
+  return "";
+}
+
+function popupHtml(r){
+  const t = (r.title || r.label || "(Sin título)");
+  const img = thumbUrl(r);
+  const date = r.date ? `<div><strong>Date:</strong> ${r.date}</div>` : "";
+  const creator = r.creator ? `<div><strong>Creator:</strong> ${r.creator}</div>` : "";
+  const subjects = (r.subjects || r.subject) ? `<div><strong>Subjects:</strong> ${r.subjects || r.subject}</div>` : "";
+  const loc = r.location ? `<div><strong>Location:</strong> ${r.location}</div>` : "";
+  const link = `<a class="btn btn-sm btn-primary mt-2" href="${itemHref(r)}">View Item</a>`;
+
+  return `
+    <div class="cb-popup">
+      <div class="h5 mb-2">${t}</div>
+      ${img ? `<div class="mb-2"><img src="${img}" alt="" style="max-width:220px; max-height:140px; display:block;"/></div>` : ``}
+      ${date}${creator}${subjects}${loc}
+      ${link}
+    </div>
+  `;
+}
+
+// ---------- Datos (inyecta desde Jekyll / CSV) ----------
+var records = [
+{% assign data = site.data[site.metadata] %}
+{% for i in data %}
+  {
+    "id": {{ i.id | jsonify }},
+    "objectid": {{ i.objectid | jsonify }},
+    "title": {{ i.title | jsonify }},
+    "date": {{ i.date | jsonify }},
+    "creator": {{ i.creator | jsonify }},
+    "subjects": {{ i.subjects | default: i.subject | jsonify }},
+    "location": {{ i.location | jsonify }},
+    "latitude": {{ i.latitude | jsonify }},
+    "longitude": {{ i.longitude | jsonify }},
+    "thumbnail": {{ i.image_thumb | default: i.thumbnail | default: i.image_small | jsonify }},
+    "image": {{ i.image | jsonify }},
+    "filename": {{ i.filename | jsonify }}
+  }{% unless forloop.last %},{% endunless %}
+{% endfor %}
+];
+
+// Filtra solo los que tienen coordenadas válidas o al menos numéricas
+records = records.filter(function(r){
+  const hasLat = (r.latitude !== null && r.latitude !== "" && !isNaN(r.latitude));
+  const hasLng = (r.longitude !== null && r.longitude !== "" && !isNaN(r.longitude));
+  return hasLat && hasLng;
+});
+
+// ---------- Iniciar mapa ----------
 (function(){
-  // === Lee el CSV de la colección ===
-  var RAW = {{ site.data[site.metadata] | jsonify }};
-
-  // === Helpers ===
-  function toNum(v){ if(v===null||v===undefined||v==="") return NaN; var n=Number(v); return isFinite(n)?n:NaN; }
-  function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
-  function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
-  function thumb(r){ return r.thumbnail || r.image_thumb || r.image || r.file || "{{ '/assets/img/placeholder.png' | relative_url }}"; }
-  function itemHref(r){
-    if (r.objectid) return "{{ '/items/' | relative_url }}" + encodeURIComponent(r.objectid) + ".html";
-    if (r.id)       return "{{ '/items/' | relative_url }}" + encodeURIComponent(r.id) + ".html";
-    if (r.url)      return r.url;
-    return "#";
-  }
-  function subjectBadges(r){
-    var raw=r.subject||r.keywords||r.tags||"";
-    var arr=Array.isArray(raw)?raw:String(raw).split(/;|,|\|/).map(s=>s.trim()).filter(Boolean);
-    return arr.slice(0,6).map(s=>'<span class="badge bg-light text-dark border me-1">'+esc(s)+'</span>').join(" ");
+  const el = document.getElementById('map') || document.getElementById('cb-map');
+  if(!el || !window.L){
+    console.warn("Map element or Leaflet not found.");
+    return;
   }
 
-  // === Parámetros URL ===
-  var url = new URL(window.location);
-  var locationParam = url.searchParams.get('location'); // "lat,lon" en PX
-  var markerFilter  = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
+  const bounds = [[0,0], [IMAGE_HEIGHT, IMAGE_WIDTH]]; // [[yMin,xMin],[yMax,xMax]]
 
-  // === Inicializa mapa con imagen base (CRS.Simple) ===
-  var map = L.map('map', { crs: L.CRS.Simple, zoomControl: true, fullscreenControl: true });
-  var imgUrl = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
-  var baseImg = new Image();
-  baseImg.onload = function(){
-    var W = baseImg.naturalWidth || baseImg.width,
-        H = baseImg.naturalHeight || baseImg.height;
-    var imgBounds = [[0,0],[H,W]];
-    L.imageOverlay(imgUrl, imgBounds).addTo(map);
-    map.setMaxBounds(imgBounds);
-    map.fitBounds(imgBounds);
+  const map = L.map(el, {
+    crs: L.CRS.Simple,
+    minZoom: -2,
+    maxZoom: 4,
+    zoomControl: true,
+    attributionControl: false,
+    maxBounds: bounds,
+    maxBoundsViscosity: 1.0
+  });
 
-    {% if site.data.theme.map-cluster == true %}
-    var markers = L.markerClusterGroup({
-      maxClusterRadius: {{ site.data.theme.map-cluster-radius | default: 25 }},
-      spiderfyOnMaxZoom: true,
-      singleMarkerMode: true
-    });
-    {% endif %}
+  // Capa base: imagen del mundo
+  L.imageOverlay(IMAGE_URL, bounds).addTo(map);
+  map.fitBounds(bounds);
 
-    // Convierte **píxeles** a latLng de imagen
-    function px(latPx, lonPx){
-      var y = toNum(latPx), x = toNum(lonPx);
-      if (isNaN(y) || isNaN(x)) return null;
-      y = clamp(y, 0, H-1); x = clamp(x, 0, W-1);
-      return L.latLng(y, x); // (y, x) en CRS.Simple
+  // Capa de marcadores (cluster si existe la lib)
+  const useClusters = !!L.markerClusterGroup;
+  const markerLayer = useClusters ? L.markerClusterGroup({ spiderfyOnMaxZoom: true }) : L.layerGroup();
+  markerLayer.addTo(map);
+
+  // Agregar marcadores
+  const markersById = {}; // para abrir por ?marker=id
+  const latLngs = [];
+
+  records.forEach(function(r){
+    // coordenadas en píxeles Y (lat), X (lng) y clamp al tamaño de la imagen
+    const y = clamp(parseFloat(r.latitude), 0, IMAGE_HEIGHT);
+    const x = clamp(parseFloat(r.longitude), 0, IMAGE_WIDTH);
+
+    const m = L.marker([y, x], { title: (r.title || r.id || "") });
+
+    m.bindPopup(popupHtml(r), { maxWidth: 320, autoPan: true, autoClose: true, closeButton: true });
+
+    // Vista previa al pasar el cursor
+    m.on('mouseover', function(){ m.openPopup(); });
+    m.on('mouseout', function(){ /* dejar el popup; se cierra al hacer click fuera */ });
+
+    markerLayer.addLayer(m);
+    latLngs.push([y, x]);
+
+    const key = (r.objectid || r.id || "").toString().trim();
+    if(key){ markersById[key] = m; }
+  });
+
+  // Ajusta vista a marcadores si existen
+  if(latLngs.length){
+    const fb = L.latLngBounds(latLngs);
+    map.fitBounds(fb.pad(0.15));
+  }
+
+  // --------- Parámetros de URL: location y marker ----------
+  const locParam = getParam("location");
+  if(locParam){
+    const parts = locParam.split(",");
+    if(parts.length === 2){
+      const y = clamp(parseFloat(parts[0]), 0, IMAGE_HEIGHT);
+      const x = clamp(parseFloat(parts[1]), 0, IMAGE_WIDTH);
+      map.setView([y, x], Math.max(map.getZoom(), 0));
     }
+  }
 
-    // === Construye GeoJSON SOLO si hay píxeles válidos ===
-    var features = [];
-    for (var i=0;i<RAW.length;i++){
-      var r = RAW[i]||{};
-      var y = toNum(r.latitude), x = toNum(r.longitude);
-      if (isNaN(y) || isNaN(x)) continue;
-
-      features.push({
-        "type":"Feature",
-        "geometry":{"type":"Point","coordinates":[ x, y ]},
-        "properties":{
-          "id": (r.objectid||"").toString().trim(),
-          "title": (r.title||"").toString(),
-          "creator": (r.creator||"").toString(),
-          "location": (r.location||"").toString(),
-          "date": (r.date||"").toString(),
-          "thumb": thumb(r),
-          "href": itemHref(r),
-          "subject": r.subject || r.keywords || r.tags || ""
-        }
+  const markerParam = getParam("marker");
+  if(markerParam && markersById[markerParam]){
+    const target = markersById[markerParam];
+    if(useClusters){
+      markerLayer.zoomToShowLayer(target, function(){
+        target.openPopup();
+        map.panTo(target.getLatLng());
       });
+    }else{
+      target.openPopup();
+      map.panTo(target.getLatLng());
     }
-    var geodata = {"type":"FeatureCollection","features":features};
+  }
 
-    // === Popups estilo CollectionBuilder (con botón "View Item") ===
-    function onEach(feature, layer){
-      var p = feature.properties||{};
-      var fields = [];
-      {% for f in fields %}{% if f.display_name %}
-      if (p[{{ f.field | jsonify }}]) { fields.push('<strong>{{ f.display_name }}:</strong> '+esc(p[{{ f.field | jsonify }}])); }
-      {% endif %}{% endfor %}
-      var meta = fields.join('<br>');
-
-      var html = ''
-        + '<div class="cb-popup" style="min-width:260px;max-width:320px;">'
-        +   '<h3 class="h6 mb-2">'+esc(p.title||'(sin título)')+'</h3>'
-        +   '<div class="ratio ratio-16x9 mb-2"><img src="'+esc(p.thumb||'')+'" alt="" style="object-fit:cover;width:100%;height:100%"></div>'
-        +   '<p class="small mb-2">'+ meta +'</p>'
-        +   '<div class="text-center"><a class="btn btn-light" href="'+esc(p.href||"#")+'">View Item</a></div>'
-        + '</div>';
-
-      layer.bindPopup(html);
-      // Hover preview (abre al pasar el cursor; se cierra al salir)
-      layer.on('mouseover', function(){ try { this.openPopup(); } catch(e){} });
-      layer.on('mouseout',  function(){ try { this.closePopup(); } catch(e){} });
-    }
-
-    function pointToLayer(feature, latlng){
-      // Usa marcador por defecto (como en el repo base)
-      var m = L.marker(latlng, { alt: feature.properties.title });
-      {% if site.data.theme.map-cluster == true %}markers.addLayer(m);{% endif %}
-      return m;
-    }
-
-    var layer = L.geoJson(geodata, { onEachFeature:onEach, pointToLayer:pointToLayer })
-      {% if site.data.theme.map-cluster != true %}.addTo(map){% else %}; map.addLayer(markers){% endif %};
-
-    // === Autoajustar si no hay ?location= ===
-    if (!locationParam) {
-      var b = layer.getBounds();
-      if (b && b.isValid()) map.fitBounds(b);
-    }
-
-    // === Centrar por ?location=LAT,LON (píxeles) ===
-    if (locationParam){
-      var p = locationParam.split(',');
-      if (p.length===2){
-        var ll = px(p[0], p[1]);
-        if (ll) map.setView(ll, Math.max(map.getZoom()+1,1), {animate:true});
-      }
-    }
-
-    // === Abrir popup por ?marker=<objectid> ===
-    if (markerFilter){
-      {% if site.data.theme.map-cluster == true %}
-      markers.eachLayer(function(layer){
-        if (layer.feature && layer.feature.properties.id === markerFilter){
-          var parent = markers.getVisibleParent(layer);
-          if (parent && parent._childCount) parent.spiderfy();
-          map.panTo(layer.getLatLng()); layer.openPopup();
-        }
-      });
-      {% else %}
-      layer.eachLayer(function(layer){
-        if (layer.feature && layer.feature.properties.id === markerFilter){
-          map.panTo(layer.getLatLng()); layer.openPopup();
-        }
-      });
-      {% endif %}
-    }
-
-    // === Búsqueda opcional ===
-    {% if site.data.theme.map-search == true %}
-    var fs = new L.Control.FuseSearch({
-      title: 'Search Map Items',
-      placeholder: 'Search map items…',
-      maxResultLength: 15,
-      threshold: {{ site.data.theme.map-search-fuzziness | default: 0.35 }}
-    });
-    map.addControl(fs);
-    var propsToIndex = {{ fields | where_exp:'f','f.fuse == "true"' | map:'field' | unshift:'title' | jsonify }};
-    fs.indexFeatures(geodata, propsToIndex);
-    fs.on('select', function(e){
-      var f = e.feature, ll = L.latLng(f.geometry.coordinates[1], f.geometry.coordinates[0]);
-      map.setView(ll, Math.max(map.getZoom()+1,1), {animate:true});
-    });
-    {% endif %}
-
-  };
-  baseImg.src = imgUrl;
 })();
-</script>
