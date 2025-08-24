@@ -49,7 +49,7 @@
   const bounds = [[0, 0], [8712.height, 4912.width]];
 
   // Capa base: la imagen del mapa OSRS
-  const osrsBase = L.imageOverlay(assets/osrs/osrs_world_map.png, bounds, { interactive: false });
+  const osrsBase = L.imageOverlay(/assets/osrs/osrs_world_map.png, bounds, { interactive: false });
 
   // Control de capas (por si en el futuro agregas otra base)
   const baseMaps = { "OSRS World Map": osrsBase };
