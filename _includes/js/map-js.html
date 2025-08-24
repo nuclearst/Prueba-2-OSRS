@@ -8,14 +8,23 @@ permalink: /map.html
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
 <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.fullscreen@1.6.0/Control.FullScreen.css"/>
 <style>
   #map{height:78vh;min-height:500px;width:100%;}
+  /* Tooltip con imagen para el hover */
+  .leaflet-tooltip.cb-tooltip{
+    background:#fff;border:1px solid #d0d0d0;box-shadow:0 2px 12px rgba(0,0,0,.15);
+    padding:.5rem .6rem;border-radius:.5rem;max-width:220px;
+  }
+  .leaflet-tooltip.cb-tooltip .title{font-weight:600;margin-bottom:.25rem;}
+  .leaflet-tooltip.cb-tooltip img{max-width:200px;max-height:120px;display:block}
 </style>
 <div id="map"></div>
 
 <!-- Librerías -->
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+<script src="https://unpkg.com/leaflet.fullscreen@1.6.0/Control.FullScreen.js"></script>
 
 <!-- Código del mapa (embebido) -->
 <script>
@@ -36,11 +45,13 @@ function itemHref(r){
   return "{{ '/item.html' | relative_url }}?id=" + encodeURIComponent(id);
 }
 function thumbUrl(r){
+  // intenta campos comunes y hace fallback a /objects/ si no hay thumbs
   if(r.thumbnail && r.thumbnail!=="null") return r.thumbnail;
   if(r.image_thumb && r.image_thumb!=="null") return r.image_thumb;
   if(r.image_small && r.image_small!=="null") return r.image_small;
   if(r.image && r.image!=="null") return r.image;
   if(r.filename && r.filename!=="null") return "{{ '/objects/thumbs/' | relative_url }}"+r.filename;
+  if(r.filename && r.filename!=="null") return "{{ '/objects/' | relative_url }}"+r.filename;
   return "";
 }
 function popupHtml(r){
@@ -79,7 +90,6 @@ var records = [
   }{% unless forloop.last %},{% endunless %}
 {% endfor %}
 ];
-// Deja sólo los que tienen coordenadas numéricas
 records = records.filter(r=>{
   const hasLat = (r.latitude!==null && r.latitude!=="" && !isNaN(r.latitude));
   const hasLng = (r.longitude!==null && r.longitude!=="" && !isNaN(r.longitude));
@@ -98,8 +108,14 @@ records = records.filter(r=>{
     maxZoom: 4,
     zoomControl: true,
     maxBounds: bounds,
-    maxBoundsViscosity: 1.0
+    maxBoundsViscosity: 1.0,
+    fullscreenControl: true  // <— botón de pantalla completa
   });
+
+  // si el plugin no añadió el control, lo agregamos manualmente
+  if (L.Control && L.Control.Fullscreen && !map.fullscreenControl) {
+    L.control.fullscreen({ position: 'topleft' }).addTo(map);
+  }
 
   L.imageOverlay(IMAGE_URL, bounds).addTo(map);
   map.fitBounds(bounds);
@@ -116,8 +132,17 @@ records = records.filter(r=>{
     const y = clamp(parseFloat(r.latitude), 0, IMAGE_HEIGHT);
     const x = clamp(parseFloat(r.longitude), 0, IMAGE_WIDTH);
     const m = L.marker([y,x], {title: r.title || r.id || ""});
-    m.bindPopup(popupHtml(r), {maxWidth:320});
-    m.on('mouseover', ()=>m.openPopup()); // vista previa al pasar
+
+    // --- Tooltip con imagen (hover) ---
+    const thumb = thumbUrl(r);
+    const tt = (thumb)
+      ? `<div class="title">${r.title || ""}</div><img src="${thumb}" alt="">`
+      : `<div class="title">${r.title || ""}</div>`;
+    m.bindTooltip(tt, {direction:'top', sticky:true, opacity:0.95, className:'cb-tooltip'});
+
+    // --- Popup completo (click) ---
+    m.bindPopup(popupHtml(r), {maxWidth:320, autoPan:true, closeButton:true});
+
     markerLayer.addLayer(m);
     latLngs.push([y,x]);
 
