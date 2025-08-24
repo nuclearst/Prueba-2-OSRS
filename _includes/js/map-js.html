@@ -34,7 +34,7 @@
     var mapZoom = locationSearchParams ? 16 : {{ site.data.theme.zoom-level | default: 5 }};
     var markerFilter = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
 
-     /* init map */
+    /* init map */
     var map = L.map('map');
 
     /* add map layer options */
