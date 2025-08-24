@@ -1,5 +1,6 @@
 objectid,filename,youtubeid,vimeoid,title,creator,date,description,subject,location,latitude,longitude,source,identifier,type,format,language,rights,rightsstatement
-coll001,iniciomasacre.png,,,Inicio Masacre,,2006,Inicio del glitch,"digital history, test, runescape",,,,,,Image;StillImage,image/png,eng,Public domain,http://rightsstatements.org/vocab/NoC-US/1.0/
+coll001,iniciomasacre.png,,,Inicio Masacre,,2006,Inicio del glitch,"digital history, test, runescape",,46.725562,-117.009633,,,Image;StillImage,image/png,eng,Public domain,http://rightsstatements.org/vocab/NoC-US/1.0/
 coll002,durial321.jpg,,,Durial321,,2006,Perpetrador de la masacre,"digital history, test, runescape",,,,,,Image;StillImage,image/jpeg,eng,,
 coll003,Pay_to_PK_riot.gif,,,"Protesta ""Pay to PK""",,2007,,"digital history, test, runescape",,,,,,Image;gif,image/gif,,,
+
 
