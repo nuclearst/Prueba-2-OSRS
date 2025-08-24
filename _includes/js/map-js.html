@@ -1,183 +1,187 @@
-<!-- Altura para que se vea el mapa -->
+<!-- Altura del contenedor del mapa -->
 <style>#map{height:70vh}</style>
 
-{%- comment -%} Variables que el theme usa {%- endcomment -%}
+{%- comment -%} Variables del tema (iconos y campos visibles en popups) {%- endcomment -%}
 {%- if site.data.theme.icons -%}
   {% assign icons = site.data.theme.icons %}
 {%- else -%}
   {% assign cb_icons = site.pages | where: "name","cb-icons.svg" | first %}
   {% assign icons = cb_icons.icons %}
 {%- endif -%}
+{% assign fields = site.data.config-map %}
 
-{%- assign fields = site.data.config-map -%}
-{% if site.data.theme.map-child-objects == true %}
-  {%- assign items = site.data[site.metadata] | where_exp: 'item','item.objectid' -%}
-{% else %}
-  {%- assign items = site.data[site.metadata] | where_exp: 'item','item.objectid' | where_exp: 'item','item.parentid == nil' -%}
-{% endif %}
 {%- comment -%}
-  Usar x,y (píxeles) en lugar de lat/long:
+Items desde metadata. Si quieres excluir hijos, copia la rama "else" del theme como prefieras.
 {%- endcomment -%}
-{%- assign items = items | where_exp: 'item', 'item.objectid != nil' | where_exp: 'item','item.x and item.y' -%}
+{% if site.data.theme.map-child-objects == true %}
+  {% assign items = site.data[site.metadata] | where_exp: 'item','item.objectid' %}
+{% else %}
+  {% assign items = site.data[site.metadata] | where_exp: 'item','item.objectid' | where_exp: 'item','item.parentid == nil' %}
+{% endif %}
 
-<!-- Librerías Leaflet y plugins del theme -->
-<script src="{{ '/assets/lib/leaflet/leaflet.js' | relative_url }}"></script>
-<script src="{{ '/assets/lib/leaflet/Leaflet.fullscreen.min.js' | relative_url }}"></script>
-{% if site.data.theme.map-search == true %}
-  <script src="{{ '/assets/lib/leaflet/fuse.min.js' | relative_url }}"></script>
-  <script src="{{ '/assets/lib/leaflet/leaflet.fusesearch.js' | relative_url }}"></script>
-{% endif %}
-{% if site.data.theme.map-cluster == true %}
-  <script src="{{ '/assets/lib/leaflet/leaflet.markercluster.js' | relative_url }}"></script>
-{% endif %}
-{% if site.data.theme.map-search == true and site.data.theme.map-cluster == true %}
-  <script src="{{ '/assets/lib/leaflet/leaflet.markercluster.freezable.js' | relative_url }}"></script>
-{% endif %}
+{%- comment -%} Usar SOLO los que tengan x,y en píxeles {%- endcomment -%}
+{% assign items = items | where_exp: 'item', 'item.x and item.y' %}
 
 <script>
 (function () {
-  /* ===========
-     Config OSRS
-     =========== */
+  /* ==============
+     CONFIG IMAGEN
+     ============== */
   const OSRS_IMAGE_URL = '{{ "/assets/osrs/osrs_world_map.png" | relative_url }}';
-  const OSRS_SIZE = { width: 2048, height: 1154 }; // tamaño real del PNG
 
-  // Parámetros URL (?location=x,y y ?marker=id)
+  // Lee parámetros (?location=x,y y ?marker=id)
   const url = new URL(window.location);
   const locParam = url.searchParams.get('location');
   const markerFilter = url.searchParams.get('marker') || "";
-  let initialCenter = null, mapZoom = 0;
-  if (locParam) {
-    const p = locParam.split(',').map(Number);
-    if (p.length===2 && p.every(Number.isFinite)) { initialCenter = [p[1], p[0]]; mapZoom = 2; }
-  }
 
-  /* ===========
-     Leaflet plano
-     =========== */
+  // Mapa en coordenadas planas (píxeles)
   const map = L.map('map', { crs: L.CRS.Simple, minZoom: -2, maxZoom: 5, zoomControl: true });
   if (L.Control.Fullscreen) map.addControl(new L.Control.Fullscreen());
 
-  // Bounds = [[y0,x0],[y1,x1]] = [[0,0],[alto,ancho]]
-  const bounds = [[0,0],[OSRS_SIZE.height, OSRS_SIZE.width]];
+  // Cargar imagen para obtener tamaño real (naturalWidth/Height)
+  const baseImg = new Image();
+  baseImg.src = OSRS_IMAGE_URL;
+  baseImg.onload = function () {
+    const OSRS_SIZE = { width: baseImg.naturalWidth, height: baseImg.naturalHeight };
+    const bounds = [[0, 0], [OSRS_SIZE.height, OSRS_SIZE.width]]; // [[y0,x0],[y1,x1]]
 
-  // Capa base: imagen única del mundo
-  const osrsBase = L.imageOverlay(OSRS_IMAGE_URL, bounds, {interactive:false}).addTo(map);
-  L.control.layers({ "OSRS World Map": osrsBase }, {}).addTo(map);
-  if (initialCenter) map.setView(initialCenter, mapZoom); else map.fitBounds(bounds);
+    // Base del mapa (imagen única)
+    const osrsBase = L.imageOverlay(OSRS_IMAGE_URL, bounds, { interactive: false }).addTo(map);
+    L.control.layers({ "OSRS World Map": osrsBase }, {}).addTo(map);
 
-  /* ========================
-     GeoJSON usando x,y (px)
-     ======================== */
-  var geodata = { "type": "FeatureCollection", "features": [
-    {% for item in items %}
-    { "type":"Feature",
-      "geometry":{ "type":"Point", "coordinates":[ {{ item.x | strip }}, {{ item.y | strip }} ] },
-      "properties": {
-        "title": {{ item.title | jsonify }},
-        {% for f in fields %}{{ f.field | jsonify }}: {{ item[f.field] | jsonify }},{% endfor %}{% if item.youtubeid %} "youtube": {{ item.youtubeid | jsonify }}, {% endif %}
-        "format": {{ item.format | jsonify }},
-        {% if  item.filename contains '/' %}"filename": "{{ item.filename }}" {% else %}"filename":{{ '/objects/' | relative_url | append: item.filename | jsonify }}{% endif %},
-        "link": "{% if item.parentid %}{{ item.parentid }}#{{ item.objectid }}{% else %}{{ item.objectid }}{% endif %}",
-        "id": {{ item.objectid | jsonify }}
-      }
-    }{% unless forloop.last %}, {% endunless %}{% endfor %}
-  ]};
-
-  /* Buscador (si está activo en _data/theme.yml) */
-  {% if site.data.theme.map-search == true %}
-  var options = {
-    title: 'Search Map Items',
-    locationholder: 'Search map items...',
-    threshold: {{ site.data.theme.map-search-fuzziness | default: 0.35 }},
-    showResultFct: function(feature, container) {
-      var result = `<strong>${feature.properties.title}</strong><br>`;
-      {% for f in fields %}
-      if (feature.properties[{{ f.field | jsonify }}]) { result += feature.properties[{{ f.field | jsonify }}] + `<br>`; }
-      {% endfor %}
-      container.innerHTML = result;
+    // Centro inicial
+    let initialCenter = null, mapZoom = 0;
+    if (locParam) {
+      const p = locParam.split(',').map(Number);
+      if (p.length===2 && p.every(Number.isFinite)) { initialCenter = [p[1], p[0]]; mapZoom = 2; }
     }
-  };
-  var searchCtrl = L.control.fuseSearch(options);
-  searchCtrl.addTo(map);
-  searchCtrl.indexFeatures(geodata.features, {{ fields | where: 'search','true' | map: 'field' | unshift: 'title' | jsonify }});
-  {% endif %}
+    if (initialCenter) map.setView(initialCenter, mapZoom); else map.fitBounds(bounds);
 
-  /* Cluster (opcional) */
-  {% if site.data.theme.map-cluster == true %}
-  var markers = L.markerClusterGroup({
-    maxClusterRadius: {{ site.data.theme.map-cluster-radius | default: 15 }},
-    singleMarkerMode: true,
-    iconCreateFunction: function(cluster) {
-      var n = cluster.getChildCount();
-      var csize = n < 10 ? 'small' : (n < 100 ? 'medium' : 'large');
-      return new L.DivIcon({ html: '<div><span class="visually-hidden">' + csize +' cluster of </span><span>' + n + '</span><span class="visually-hidden"> items</span></div>', className: 'marker-cluster marker-cluster-' + csize, iconSize: new L.Point(40, 40) });
-    }
-    {% if site.data.theme.map-search == true %}, removeOutsideVisibleBounds: false{% endif %}
-  });
-  {% endif %}
+    // ========= Datos (x,y en píxeles) =========
+    var geodata = { "type": "FeatureCollection", "features": [
+      {% for item in items %}
+      { "type":"Feature",
+        "geometry":{ "type":"Point", "coordinates":[ {{ item.x | strip }}, {{ item.y | strip }} ] },
+        "properties": {
+          "title": {{ item.title | jsonify }},
+          {% for f in fields %}{{ f.field | jsonify }}: {{ item[f.field] | jsonify }},{% endfor %}{% if item.youtubeid %} "youtube": {{ item.youtubeid | jsonify }}, {% endif %}
+          "format": {{ item.format | jsonify }},
+          {% if  item.filename contains '/' %}"filename": "{{ item.filename }}" {% else %}"filename":{{ '/objects/' | relative_url | append: item.filename | jsonify }}{% endif %},
+          "link": "{% if item.parentid %}{{ item.parentid }}#{{ item.objectid }}{% else %}{{ item.objectid }}{% endif %}",
+          "id": {{ item.objectid | jsonify }}
+        }
+      }{% unless forloop.last %}, {% endunless %}{% endfor %}
+    ]};
 
-  /* Popups (igual que el theme) */
-  function objectPopups(feature, layer) {
-    {% if site.data.theme.map-search == true %} feature.layer = layer; {% endif %}
-    var itemHref = '{{ "/item.html" | relative_url }}?id=' + feature.properties.link;
-    var thumbSrc;
-    if (feature.properties.youtube) {
-      thumbSrc = 'https://img.youtube.com/vi/' +  feature.properties.youtube + '/default.jpg';
-    } else if (feature.properties.format && feature.properties.format.includes("image")) {
-      thumbSrc = feature.properties.filename;
-    } else if (feature.properties.format && feature.properties.format.includes("audio")) {
-      thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-audio }}.svg';
-    } else if (feature.properties.format && feature.properties.format.includes("video")) {
-      thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-video }}.svg';
-    } else if (feature.properties.format && feature.properties.format.includes("pdf")) {
-      thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-pdf }}.svg';
-    } else if (feature.properties.format && feature.properties.format.includes("compound")) {
-      thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-compound-object }}.svg';
-    } else if (feature.properties.format && feature.properties.format.includes("multiple")) {
-      thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-multiple }}.svg';
-    } else { thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-default }}.svg'; }
-
-    var popup = '<h2 class="h4"><a class="text-dark" href="' + itemHref + '">' + feature.properties.title +
-                '</a></h2><div class="text-center"><a href="' + itemHref +
-                '"><img class="map-thumb img-thumb" src="' + thumbSrc + '" alt="item thumbnail"></a></div><p>';
-    {% for f in fields %}{% if f.display_name %}
-    if (feature.properties[{{ f.field | jsonify }}]) { popup += '<strong>{{ f.display_name }}:</strong> ' + feature.properties[{{ f.field | jsonify }}] + '<br>'; }
-    {% endif %}{% endfor %}
-    popup += '</p><div class="text-center"><a class="btn btn-light" href="' + itemHref + '">View Item</a></div>';
-    layer.bindPopup(popup);
-  }
-
-  /* Marcadores desde GeoJSON (x,y -> lat,lng) */
-  function objectMarkers(feature, latlng) {
-    var m = L.marker(latlng, { alt: feature.properties.title });
-    {% if site.data.theme.map-cluster == true %}markers.addLayer(m);{% endif %}
-    return m;
-  }
-
-  var mapFeatures = L.geoJson(geodata, { onEachFeature: objectPopups, pointToLayer: objectMarkers })
-  {% if site.data.theme.map-cluster != true %}.addTo(map);{% else %}; map.addLayer(markers);{% endif %}
-
-  // Auto-encuadre si no pasas ?location=
-  {% if site.data.theme.auto-center-map == true %}
-  if (!locParam) {
-    const fb = mapFeatures.getBounds();
-    if (fb?.isValid()) map.fitBounds(fb); else map.fitBounds(bounds);
-  }
-  {% endif %}
-
-  // Abrir popup por ?marker=
-  if (markerFilter) {
-    {% if site.data.theme.map-cluster == true %}
-    markers.eachLayer(layer => {
-      if (layer.feature && layer.feature.properties.id === markerFilter) {
-        if (markers.getVisibleParent(layer)["_childCount"]) { markers.getVisibleParent(layer).spiderfy(); }
-        layer.openPopup();
+    // Buscador
+    {% if site.data.theme.map-search == true %}
+    var options = {
+      title: 'Search Map Items',
+      locationholder: 'Search map items...',
+      threshold: {{ site.data.theme.map-search-fuzziness | default: 0.35 }},
+      showResultFct: function(feature, container) {
+        var result = `<strong>${feature.properties.title}</strong><br>`;
+        {% for f in fields %}
+        if (feature.properties[{{ f.field | jsonify }}]) { result += feature.properties[{{ f.field | jsonify }}] + `<br>`; }
+        {% endfor %}
+        container.innerHTML = result;
       }
-    });
-    {% else %}
-    mapFeatures.eachLayer(layer => { if (layer.feature && layer.feature.properties.id === markerFilter) layer.openPopup(); });
+    };
+    var searchCtrl = L.control.fuseSearch(options);
+    searchCtrl.addTo(map);
+    searchCtrl.indexFeatures(geodata.features, {{ fields | where: 'search','true' | map: 'field' | unshift: 'title' | jsonify }});
     {% endif %}
-  }
+
+    // Cluster
+    {% if site.data.theme.map-cluster == true %}
+    var markers = L.markerClusterGroup({
+      maxClusterRadius: {{ site.data.theme.map-cluster-radius | default: 25 }},
+      singleMarkerMode: true,
+      iconCreateFunction: function(cluster) {
+        var n = cluster.getChildCount();
+        var csize = n < 10 ? 'small' : (n < 100 ? 'medium' : 'large');
+        return new L.DivIcon({ html: '<div><span class="visually-hidden">' + csize +' cluster of </span><span>' + n + '</span><span class="visually-hidden"> items</span></div>', className: 'marker-cluster marker-cluster-' + csize, iconSize: new L.Point(40, 40) });
+      }
+      {% if site.data.theme.map-search == true %}, removeOutsideVisibleBounds: false{% endif %}
+    });
+    {% endif %}
+
+    // Popups
+    function objectPopups(feature, layer) {
+      {% if site.data.theme.map-search == true %} feature.layer = layer; {% endif %}
+      var itemHref = '{{ "/item.html" | relative_url }}?id=' + feature.properties.link;
+
+      var thumbSrc;
+      if (feature.properties.youtube) thumbSrc = 'https://img.youtube.com/vi/' +  feature.properties.youtube + '/default.jpg';
+      else if (feature.properties.format && feature.properties.format.includes("image")) thumbSrc = feature.properties.filename;
+      else if (feature.properties.format && feature.properties.format.includes("audio")) thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-audio }}.svg';
+      else if (feature.properties.format && feature.properties.format.includes("video")) thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-video }}.svg';
+      else if (feature.properties.format && feature.properties.format.includes("pdf"))   thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-pdf }}.svg';
+      else if (feature.properties.format && feature.properties.format.includes("compound")) thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-compound-object }}.svg';
+      else if (feature.properties.format && feature.properties.format.includes("multiple")) thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-multiple }}.svg';
+      else thumbSrc = '{{ "/assets/lib/icons/" | relative_url }}{{ icons.icon-default }}.svg';
+
+      var popup = '<h2 class="h4"><a class="text-dark" href="' + itemHref + '">' + feature.properties.title +
+                  '</a></h2><div class="text-center"><a href="' + itemHref +
+                  '"><img class="map-thumb img-thumb" src="' + thumbSrc + '" alt="item thumbnail"></a></div><p>';
+      {% for f in fields %}{% if f.display_name %}
+      if (feature.properties[{{ f.field | jsonify }}]) { popup += '<strong>{{ f.display_name }}:</strong> ' + feature.properties[{{ f.field | jsonify }}] + '<br>'; }
+      {% endif %}{% endfor %}
+      popup += '</p><div class="text-center"><a class="btn btn-light" href="' + itemHref + '">View Item</a></div>';
+      layer.bindPopup(popup);
+    }
+
+    // Marcadores desde GeoJSON (Leaflet interpreta [x,y] como [lng,lat] -> [lat,lng])
+    function objectMarkers(feature, latlng) {
+      var m = L.marker(latlng, { alt: feature.properties.title });
+      {% if site.data.theme.map-cluster == true %}markers.addLayer(m);{% endif %}
+      return m;
+    }
+
+    var mapFeatures = L.geoJson(geodata, { onEachFeature: objectPopups, pointToLayer: objectMarkers })
+    {% if site.data.theme.map-cluster != true %}.addTo(map);{% else %}; map.addLayer(markers);{% endif %}
+
+    // Auto-encuadre si no hay ?location=
+    {% if site.data.theme.auto-center-map == true %}
+    if (!locParam) {
+      const fb = mapFeatures.getBounds();
+      if (fb?.isValid()) map.fitBounds(fb); else map.fitBounds(bounds);
+    }
+    {% endif %}
+
+    // Abrir popup por ?marker=
+    if (markerFilter) {
+      {% if site.data.theme.map-cluster == true %}
+      markers.eachLayer(layer => {
+        if (layer.feature && layer.feature.properties.id === markerFilter) {
+          if (markers.getVisibleParent(layer)["_childCount"]) { markers.getVisibleParent(layer).spiderfy(); }
+          layer.openPopup();
+        }
+      });
+      {% else %}
+      mapFeatures.eachLayer(layer => { if (layer.feature && layer.feature.properties.id === markerFilter) layer.openPopup(); });
+      {% endif %}
+    }
+
+    // === Utilidad para capturar x,y (píxeles) haciendo click ===
+    const coordBox = L.control({position:'bottomleft'});
+    coordBox.onAdd = function() {
+      const div = L.DomUtil.create('div','leaflet-bar');
+      div.style.padding='6px 8px'; div.style.background='rgba(255,255,255,.9)'; div.style.font='12px/1.2 monospace';
+      div.innerHTML = 'x,y: —';
+      this._div = div; return div;
+    };
+    coordBox.addTo(map);
+    map.on('click', (e) => {
+      // e.latlng = [y, x] en CRS.Simple → píxeles:
+      const x = Math.round(e.latlng.lng), y = Math.round(e.latlng.lat);
+      coordBox._div.innerHTML = 'x,y: ' + x + ',' + y;
+      console.log('Click en px:', x, y);
+    });
+  };
+
+  baseImg.onerror = function () {
+    console.error("No se pudo cargar la imagen del mapa:", OSRS_IMAGE_URL);
+  };
 })();
 </script>
