@@ -32,7 +32,7 @@
         "date": {{ item.date | jsonify }},
         {% if item.youtubeid %}"youtube": {{ item.youtubeid | jsonify }}, {% endif %}
         "format": {{ item.format | jsonify }},
-        {% if item.filename %}"image": "{{ '/objects/thumbs/' | relative_url | append: item.filename }}", {% endif %}
+        {% if item.filename %}"image": "{{ '/objects/' | relative_url | append: item.filename }}", {% endif %}
         {% if item.vimeoid %}"vimeo": {{ item.vimeoid | jsonify }}, {% endif %}
         "link": {{ item.objectid | jsonify }}
       }
@@ -42,10 +42,10 @@
 
   /* URL params (?location=lat,lng & ?marker=id) */
   let url = new URL(window.location);
-  var locationParam = url.searchParams.get('location');   // lat,lng en el MISMO sistema que metadata (px | % | fracción)
+  var locationParam = url.searchParams.get('location');
   var markerFilter  = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
 
-  /* Init map on image coordinates */
+  /* Init map in image CRS */
   var map = L.map('map', {
     crs: L.CRS.Simple,
     zoomControl: true,
@@ -65,7 +65,7 @@
     map.fitBounds(imageBounds);
 
     {% if site.data.theme.map-cluster == true %}
-    /* Punto verde como en el modelo base */
+    /* Punto verde como el modelo base */
     var markers = L.markerClusterGroup({
       maxClusterRadius: 40,
       singleMarkerMode: true,
@@ -73,18 +73,13 @@
     });
     {% endif %}
 
-    /* === PARCHE coordenadas: fracción/porcentaje dentro del borde === */
+    /* Heurística coord: fracción / % / píxeles + clamp en bordes */
     function toImageLatLng(lat, lng) {
       if (lat == null || lng == null || isNaN(lat) || isNaN(lng)) return null;
       var y = lat, x = lng;
       var aLat = Math.abs(lat), aLng = Math.abs(lng);
-      if ((aLat <= 1 && aLng <= 1)) {
-        y = Math.min(lat, 0.9999) * h;
-        x = Math.min(lng, 0.9999) * w;
-      } else if ((aLat <= 100 && aLng <= 100)) {
-        y = (Math.min(lat, 99.9999) / 100.0) * h;
-        x = (Math.min(lng, 99.9999) / 100.0) * w;
-      } // else: píxeles
+      if ((aLat <= 1 && aLng <= 1)) { y = Math.min(lat, 0.9999) * h; x = Math.min(lng, 0.9999) * w; }
+      else if ((aLat <= 100 && aLng <= 100)) { y = (Math.min(lat, 99.9999) / 100.0) * h; x = (Math.min(lng, 99.9999) / 100.0) * w; }
       y = Math.max(0, Math.min(h - 1, y));
       x = Math.max(0, Math.min(w - 1, x));
       return L.latLng(y, x);
@@ -122,9 +117,7 @@
       layer.bindPopup(popupText);
     }
 
-    /* Marcadores:
-       - Si hay cluster -> L.marker (y el cluster los dibuja como punto verde).
-       - Si NO hay cluster -> L.circleMarker verde. */
+    /* Marcadores: cluster (punto verde) o circleMarker verde */
     function objectMarkers(feature/*, latlngIgnored*/) {
       var coords = feature.geometry && feature.geometry.coordinates ? feature.geometry.coordinates : null;
       var ll = coords ? toImageLatLng(coords[1], coords[0]) : null;
@@ -135,13 +128,7 @@
       markers.addLayer(marker);
       return marker;
       {% else %}
-      return L.circleMarker(ll, {
-        radius: 6,
-        weight: 1,
-        color: '#147a3c',
-        fillColor: '#2ecc71',
-        fillOpacity: 0.9
-      });
+      return L.circleMarker(ll, { radius: 6, weight: 1, color: '#147a3c', fillColor: '#2ecc71', fillOpacity: 0.9 });
       {% endif %}
     }
 
@@ -157,45 +144,36 @@
     }){% if site.data.theme.map-cluster != true %}.addTo(map);{% else %};
     map.addLayer(markers);{% endif %}
 
-    /* === NUEVO: centrar usando ?location=lat,lng === */
+    /* Centrar con ?location=lat,lng (igual al base) */
     if (locationParam) {
       var parts = locationParam.split(',');
       if (parts.length === 2) {
         var lat = parseFloat(parts[0]);
         var lng = parseFloat(parts[1]);
         var ll  = toImageLatLng(lat, lng);
-        if (ll) {
-          var targetZoom = Math.max(map.getZoom() + 1, 1); // acércate un paso
-          map.setView(ll, targetZoom, { animate: true });
-        }
+        if (ll) { map.setView(ll, Math.max(map.getZoom()+1, 1), { animate: true }); }
       }
     }
 
-    /* Abrir popup / spiderfy si ?marker=ID */
+    /* Abrir popup si ?marker=ID */
     if (markerFilter != "") {
       {% if site.data.theme.map-cluster == true %}
       markers.eachLayer(layer => {
         if (layer.feature && layer.feature.properties.id === markerFilter) {
-          if (markers.getVisibleParent(layer)["_childCount"]) {
-            markers.getVisibleParent(layer).spiderfy();
-          }
-          map.panTo(layer.getLatLng());
-          layer.openPopup();
+          if (markers.getVisibleParent(layer)["_childCount"]) { markers.getVisibleParent(layer).spiderfy(); }
+          map.panTo(layer.getLatLng()); layer.openPopup();
         }
       });
       {% else %}
       mapFeatures.eachLayer(layer => {
         if (layer.feature && layer.feature.properties.id === markerFilter) {
-          map.panTo(layer.getLatLng());
-          layer.openPopup();
+          map.panTo(layer.getLatLng()); layer.openPopup();
         }
       });
       {% endif %}
     }
 
   }; // end img.onload
-
   img.src = imgUrl;
-
 })();
 </script>
