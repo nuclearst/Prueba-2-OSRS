@@ -1,60 +1,65 @@
-/* ===== CollectionBuilder-GH — Map (OSRS pixels) ===========================
-   Requiere Leaflet y (opcional) Leaflet.markercluster cargados en map.html
-   Se dibuja sobre una imagen (CRS.Simple) con coordenadas en píxeles.
-   - Imagen base: 8712x4912 px (OSRS world map)
-   - Soporta ?location=LAT,LNG y ?marker=ID
-   - Vista previa al pasar el cursor; botón "View Item" corrige a item.html?id=
-   ======================================================================= */
+---
+layout: page
+title: Map
+permalink: /map.html
+---
 
-// ---------- Config de imagen ----------
-const IMAGE_WIDTH  = 8712; // X
-const IMAGE_HEIGHT = 4912; // Y
+<!-- Estilos y contenedor -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css"/>
+<link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css"/>
+<style>
+  #map{height:78vh;min-height:500px;width:100%;}
+</style>
+<div id="map"></div>
+
+<!-- Librerías -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+<!-- Código del mapa (embebido) -->
+<script>
+// --- Config de imagen (OSRS) ---
+const IMAGE_WIDTH  = 8712;   // X
+const IMAGE_HEIGHT = 4912;   // Y
 const IMAGE_URL = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
 
-// ---------- Utilidades ----------
-function clamp(n, min, max){ return Math.max(min, Math.min(max, n)); }
-
+// --- Utilidades ---
+function clamp(n,min,max){return Math.max(min,Math.min(max,n));}
 function getParam(name){
-  const m = new RegExp('[?&]' + name + '=([^&]+)').exec(location.search);
-  return m ? decodeURIComponent(m[1].replace(/\+/g, ' ')) : null;
+  const m = new RegExp('[?&]'+name+'=([^&]+)').exec(location.search);
+  return m ? decodeURIComponent(m[1].replace(/\+/g,' ')) : null;
 }
-
 function itemHref(r){
   const id = (r.objectid || r.id || "").toString().trim();
   if(!id) return "#";
   return "{{ '/item.html' | relative_url }}?id=" + encodeURIComponent(id);
 }
-
 function thumbUrl(r){
-  // intenta varios campos comunes de CollectionBuilder; si no, usa filename en /objects/thumbs/
-  if (r.thumbnail && r.thumbnail !== "null") return r.thumbnail;
-  if (r.image && r.image !== "null") return r.image;
-  if (r.image_small && r.image_small !== "null") return r.image_small;
-  if (r.image_thumb && r.image_thumb !== "null") return r.image_thumb;
-  if (r.filename && r.filename !== "null") return "{{ '/objects/thumbs/' | relative_url }}" + r.filename;
+  if(r.thumbnail && r.thumbnail!=="null") return r.thumbnail;
+  if(r.image_thumb && r.image_thumb!=="null") return r.image_thumb;
+  if(r.image_small && r.image_small!=="null") return r.image_small;
+  if(r.image && r.image!=="null") return r.image;
+  if(r.filename && r.filename!=="null") return "{{ '/objects/thumbs/' | relative_url }}"+r.filename;
   return "";
 }
-
 function popupHtml(r){
-  const t = (r.title || r.label || "(Sin título)");
+  const t = r.title || r.label || "(Sin título)";
   const img = thumbUrl(r);
-  const date = r.date ? `<div><strong>Date:</strong> ${r.date}</div>` : "";
-  const creator = r.creator ? `<div><strong>Creator:</strong> ${r.creator}</div>` : "";
-  const subjects = (r.subjects || r.subject) ? `<div><strong>Subjects:</strong> ${r.subjects || r.subject}</div>` : "";
-  const loc = r.location ? `<div><strong>Location:</strong> ${r.location}</div>` : "";
-  const link = `<a class="btn btn-sm btn-primary mt-2" href="${itemHref(r)}">View Item</a>`;
-
+  const date = r.date? `<div><strong>Date:</strong> ${r.date}</div>`:"";
+  const creator = r.creator? `<div><strong>Creator:</strong> ${r.creator}</div>`:"";
+  const subjects = (r.subjects||r.subject)? `<div><strong>Subjects:</strong> ${r.subjects||r.subject}</div>`:"";
+  const loc = r.location? `<div><strong>Location:</strong> ${r.location}</div>`:"";
   return `
     <div class="cb-popup">
       <div class="h5 mb-2">${t}</div>
-      ${img ? `<div class="mb-2"><img src="${img}" alt="" style="max-width:220px; max-height:140px; display:block;"/></div>` : ``}
+      ${img?`<div class="mb-2"><img src="${img}" alt="" style="max-width:220px;max-height:140px;display:block;"/></div>`:""}
       ${date}${creator}${subjects}${loc}
-      ${link}
-    </div>
-  `;
+      <a class="btn btn-sm btn-primary mt-2" href="${itemHref(r)}">View Item</a>
+    </div>`;
 }
 
-// ---------- Datos (inyecta desde Jekyll / CSV) ----------
+// --- Cargar registros desde tu CSV (site.data[site.metadata]) ---
 var records = [
 {% assign data = site.data[site.metadata] %}
 {% for i in data %}
@@ -74,96 +79,79 @@ var records = [
   }{% unless forloop.last %},{% endunless %}
 {% endfor %}
 ];
-
-// Filtra solo los que tienen coordenadas válidas o al menos numéricas
-records = records.filter(function(r){
-  const hasLat = (r.latitude !== null && r.latitude !== "" && !isNaN(r.latitude));
-  const hasLng = (r.longitude !== null && r.longitude !== "" && !isNaN(r.longitude));
+// Deja sólo los que tienen coordenadas numéricas
+records = records.filter(r=>{
+  const hasLat = (r.latitude!==null && r.latitude!=="" && !isNaN(r.latitude));
+  const hasLng = (r.longitude!==null && r.longitude!=="" && !isNaN(r.longitude));
   return hasLat && hasLng;
 });
 
-// ---------- Iniciar mapa ----------
+// --- Iniciar mapa ---
 (function(){
-  const el = document.getElementById('map') || document.getElementById('cb-map');
-  if(!el || !window.L){
-    console.warn("Map element or Leaflet not found.");
-    return;
-  }
+  const el = document.getElementById('map');
+  if(!el){ console.error('No #map'); return; }
 
-  const bounds = [[0,0], [IMAGE_HEIGHT, IMAGE_WIDTH]]; // [[yMin,xMin],[yMax,xMax]]
-
-  const map = L.map(el, {
+  const bounds = [[0,0],[IMAGE_HEIGHT,IMAGE_WIDTH]]; // [[yMin,xMin],[yMax,xMax]]
+  const map = L.map(el,{
     crs: L.CRS.Simple,
     minZoom: -2,
     maxZoom: 4,
     zoomControl: true,
-    attributionControl: false,
     maxBounds: bounds,
     maxBoundsViscosity: 1.0
   });
 
-  // Capa base: imagen del mundo
   L.imageOverlay(IMAGE_URL, bounds).addTo(map);
   map.fitBounds(bounds);
 
-  // Capa de marcadores (cluster si existe la lib)
-  const useClusters = !!L.markerClusterGroup;
-  const markerLayer = useClusters ? L.markerClusterGroup({ spiderfyOnMaxZoom: true }) : L.layerGroup();
+  const markerLayer = (L.markerClusterGroup)
+    ? L.markerClusterGroup({spiderfyOnMaxZoom:true})
+    : L.layerGroup();
   markerLayer.addTo(map);
 
-  // Agregar marcadores
-  const markersById = {}; // para abrir por ?marker=id
   const latLngs = [];
+  const markersById = {};
 
-  records.forEach(function(r){
-    // coordenadas en píxeles Y (lat), X (lng) y clamp al tamaño de la imagen
+  records.forEach(r=>{
     const y = clamp(parseFloat(r.latitude), 0, IMAGE_HEIGHT);
     const x = clamp(parseFloat(r.longitude), 0, IMAGE_WIDTH);
-
-    const m = L.marker([y, x], { title: (r.title || r.id || "") });
-
-    m.bindPopup(popupHtml(r), { maxWidth: 320, autoPan: true, autoClose: true, closeButton: true });
-
-    // Vista previa al pasar el cursor
-    m.on('mouseover', function(){ m.openPopup(); });
-    m.on('mouseout', function(){ /* dejar el popup; se cierra al hacer click fuera */ });
-
+    const m = L.marker([y,x], {title: r.title || r.id || ""});
+    m.bindPopup(popupHtml(r), {maxWidth:320});
+    m.on('mouseover', ()=>m.openPopup()); // vista previa al pasar
     markerLayer.addLayer(m);
-    latLngs.push([y, x]);
+    latLngs.push([y,x]);
 
     const key = (r.objectid || r.id || "").toString().trim();
-    if(key){ markersById[key] = m; }
+    if(key) markersById[key] = m;
   });
 
-  // Ajusta vista a marcadores si existen
   if(latLngs.length){
     const fb = L.latLngBounds(latLngs);
     map.fitBounds(fb.pad(0.15));
   }
 
-  // --------- Parámetros de URL: location y marker ----------
+  // Parámetros de URL
   const locParam = getParam("location");
   if(locParam){
-    const parts = locParam.split(",");
-    if(parts.length === 2){
-      const y = clamp(parseFloat(parts[0]), 0, IMAGE_HEIGHT);
-      const x = clamp(parseFloat(parts[1]), 0, IMAGE_WIDTH);
-      map.setView([y, x], Math.max(map.getZoom(), 0));
+    const p = locParam.split(",");
+    if(p.length===2){
+      const y = clamp(parseFloat(p[0]),0,IMAGE_HEIGHT);
+      const x = clamp(parseFloat(p[1]),0,IMAGE_WIDTH);
+      map.setView([y,x], Math.max(map.getZoom(),0));
     }
   }
-
   const markerParam = getParam("marker");
   if(markerParam && markersById[markerParam]){
-    const target = markersById[markerParam];
-    if(useClusters){
-      markerLayer.zoomToShowLayer(target, function(){
-        target.openPopup();
-        map.panTo(target.getLatLng());
+    const t = markersById[markerParam];
+    if(markerLayer.zoomToShowLayer){
+      markerLayer.zoomToShowLayer(t, function(){
+        t.openPopup(); map.panTo(t.getLatLng());
       });
-    }else{
-      target.openPopup();
-      map.panTo(target.getLatLng());
+    } else {
+      t.openPopup(); map.panTo(t.getLatLng());
     }
   }
 
+  console.log("Registros con coords:", records.length);
 })();
+</script>
