@@ -1,0 +1,179 @@
+\
+{%- if site.data.theme.icons -%}{% assign icons = site.data.theme.icons %}{% else %}
+{% assign cb_icons = site.pages | where: "name","cb-icons.svg" | first %}
+{% assign icons = cb_icons.icons %}{%- endif -%}
+{%- assign fields = site.data.config-map -%}
+<script src="{{ '/assets/lib/leaflet/leaflet.js' | relative_url }}"></script>
+<script src="{{ '/assets/lib/leaflet/Leaflet.fullscreen.min.js' | relative_url }}"></script>
+{% if site.data.theme.map-search == true %}<script src="{{ '/assets/lib/leaflet/fuse.min.js' | relative_url }}"></script>
+<script src="{{ '/assets/lib/leaflet/leaflet.fusesearch.js' | relative_url }}"></script>{% endif %}
+{% if site.data.theme.map-cluster == true %}<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.js' | relative_url }}"></script>{% endif %}
+{% if site.data.theme.map-search == true and site.data.theme.map-cluster == true %}<script src="{{ '/assets/lib/leaflet/leaflet.markercluster.freezable.js' | relative_url }}"></script>{% endif %}
+
+<script>
+(function(){
+  // === Lee el CSV de la colección ===
+  var RAW = {{ site.data[site.metadata] | jsonify }};
+
+  // === Helpers ===
+  function toNum(v){ if(v===null||v===undefined||v==="") return NaN; var n=Number(v); return isFinite(n)?n:NaN; }
+  function clamp(n,min,max){ return Math.max(min, Math.min(max, n)); }
+  function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+  function thumb(r){ return r.thumbnail || r.image_thumb || r.image || r.file || "{{ '/assets/img/placeholder.png' | relative_url }}"; }
+  function itemHref(r){
+    if (r.objectid) return "{{ '/items/' | relative_url }}" + encodeURIComponent(r.objectid) + ".html";
+    if (r.id)       return "{{ '/items/' | relative_url }}" + encodeURIComponent(r.id) + ".html";
+    if (r.url)      return r.url;
+    return "#";
+  }
+  function subjectBadges(r){
+    var raw=r.subject||r.keywords||r.tags||"";
+    var arr=Array.isArray(raw)?raw:String(raw).split(/;|,|\|/).map(s=>s.trim()).filter(Boolean);
+    return arr.slice(0,6).map(s=>'<span class="badge bg-light text-dark border me-1">'+esc(s)+'</span>').join(" ");
+  }
+
+  // === Parámetros URL ===
+  var url = new URL(window.location);
+  var locationParam = url.searchParams.get('location'); // "lat,lon" en PX
+  var markerFilter  = url.searchParams.get('marker') ? url.searchParams.get('marker') : "";
+
+  // === Inicializa mapa con imagen base (CRS.Simple) ===
+  var map = L.map('map', { crs: L.CRS.Simple, zoomControl: true, fullscreenControl: true });
+  var imgUrl = "{{ '/assets/osrs/osrs_world_map.png' | relative_url }}";
+  var baseImg = new Image();
+  baseImg.onload = function(){
+    var W = baseImg.naturalWidth || baseImg.width,
+        H = baseImg.naturalHeight || baseImg.height;
+    var imgBounds = [[0,0],[H,W]];
+    L.imageOverlay(imgUrl, imgBounds).addTo(map);
+    map.setMaxBounds(imgBounds);
+    map.fitBounds(imgBounds);
+
+    {% if site.data.theme.map-cluster == true %}
+    var markers = L.markerClusterGroup({
+      maxClusterRadius: {{ site.data.theme.map-cluster-radius | default: 25 }},
+      spiderfyOnMaxZoom: true,
+      singleMarkerMode: true
+    });
+    {% endif %}
+
+    // Convierte **píxeles** a latLng de imagen
+    function px(latPx, lonPx){
+      var y = toNum(latPx), x = toNum(lonPx);
+      if (isNaN(y) || isNaN(x)) return null;
+      y = clamp(y, 0, H-1); x = clamp(x, 0, W-1);
+      return L.latLng(y, x); // (y, x) en CRS.Simple
+    }
+
+    // === Construye GeoJSON SOLO si hay píxeles válidos ===
+    var features = [];
+    for (var i=0;i<RAW.length;i++){
+      var r = RAW[i]||{};
+      var y = toNum(r.latitude), x = toNum(r.longitude);
+      if (isNaN(y) || isNaN(x)) continue;
+
+      features.push({
+        "type":"Feature",
+        "geometry":{"type":"Point","coordinates":[ x, y ]},
+        "properties":{
+          "id": (r.objectid||"").toString().trim(),
+          "title": (r.title||"").toString(),
+          "creator": (r.creator||"").toString(),
+          "location": (r.location||"").toString(),
+          "date": (r.date||"").toString(),
+          "thumb": thumb(r),
+          "href": itemHref(r),
+          "subject": r.subject || r.keywords || r.tags || ""
+        }
+      });
+    }
+    var geodata = {"type":"FeatureCollection","features":features};
+
+    // === Popups estilo CollectionBuilder (con botón "View Item") ===
+    function onEach(feature, layer){
+      var p = feature.properties||{};
+      var fields = [];
+      {% for f in fields %}{% if f.display_name %}
+      if (p[{{ f.field | jsonify }}]) { fields.push('<strong>{{ f.display_name }}:</strong> '+esc(p[{{ f.field | jsonify }}])); }
+      {% endif %}{% endfor %}
+      var meta = fields.join('<br>');
+
+      var html = ''
+        + '<div class="cb-popup" style="min-width:260px;max-width:320px;">'
+        +   '<h3 class="h6 mb-2">'+esc(p.title||'(sin título)')+'</h3>'
+        +   '<div class="ratio ratio-16x9 mb-2"><img src="'+esc(p.thumb||'')+'" alt="" style="object-fit:cover;width:100%;height:100%"></div>'
+        +   '<p class="small mb-2">'+ meta +'</p>'
+        +   '<div class="text-center"><a class="btn btn-light" href="'+esc(p.href||"#")+'">View Item</a></div>'
+        + '</div>';
+
+      layer.bindPopup(html);
+      // Hover preview (abre al pasar el cursor; se cierra al salir)
+      layer.on('mouseover', function(){ try { this.openPopup(); } catch(e){} });
+      layer.on('mouseout',  function(){ try { this.closePopup(); } catch(e){} });
+    }
+
+    function pointToLayer(feature, latlng){
+      // Usa marcador por defecto (como en el repo base)
+      var m = L.marker(latlng, { alt: feature.properties.title });
+      {% if site.data.theme.map-cluster == true %}markers.addLayer(m);{% endif %}
+      return m;
+    }
+
+    var layer = L.geoJson(geodata, { onEachFeature:onEach, pointToLayer:pointToLayer })
+      {% if site.data.theme.map-cluster != true %}.addTo(map){% else %}; map.addLayer(markers){% endif %};
+
+    // === Autoajustar si no hay ?location= ===
+    if (!locationParam) {
+      var b = layer.getBounds();
+      if (b && b.isValid()) map.fitBounds(b);
+    }
+
+    // === Centrar por ?location=LAT,LON (píxeles) ===
+    if (locationParam){
+      var p = locationParam.split(',');
+      if (p.length===2){
+        var ll = px(p[0], p[1]);
+        if (ll) map.setView(ll, Math.max(map.getZoom()+1,1), {animate:true});
+      }
+    }
+
+    // === Abrir popup por ?marker=<objectid> ===
+    if (markerFilter){
+      {% if site.data.theme.map-cluster == true %}
+      markers.eachLayer(function(layer){
+        if (layer.feature && layer.feature.properties.id === markerFilter){
+          var parent = markers.getVisibleParent(layer);
+          if (parent && parent._childCount) parent.spiderfy();
+          map.panTo(layer.getLatLng()); layer.openPopup();
+        }
+      });
+      {% else %}
+      layer.eachLayer(function(layer){
+        if (layer.feature && layer.feature.properties.id === markerFilter){
+          map.panTo(layer.getLatLng()); layer.openPopup();
+        }
+      });
+      {% endif %}
+    }
+
+    // === Búsqueda opcional ===
+    {% if site.data.theme.map-search == true %}
+    var fs = new L.Control.FuseSearch({
+      title: 'Search Map Items',
+      placeholder: 'Search map items…',
+      maxResultLength: 15,
+      threshold: {{ site.data.theme.map-search-fuzziness | default: 0.35 }}
+    });
+    map.addControl(fs);
+    var propsToIndex = {{ fields | where_exp:'f','f.fuse == "true"' | map:'field' | unshift:'title' | jsonify }};
+    fs.indexFeatures(geodata, propsToIndex);
+    fs.on('select', function(e){
+      var f = e.feature, ll = L.latLng(f.geometry.coordinates[1], f.geometry.coordinates[0]);
+      map.setView(ll, Math.max(map.getZoom()+1,1), {animate:true});
+    });
+    {% endif %}
+
+  };
+  baseImg.src = imgUrl;
+})();
+</script>
